@@ -200,6 +200,8 @@ def cf2_control_fn(robotNo, robotPose, tb3B_poses, tb3W_poses, rmtt_poses, cf2_p
     z_dist = 1.0
     trigger_takeoff = False # trigger to takeoff the drone (True/False)
     trigger_land = False # trigger to land the drone (True/False)
+    d_safe = 0.3
+    
     if not TAKEOFF_DONE and robotPose[2] < 0.05: # if the drone is on the ground and takeoff is not done
         if robotNo == 1:
             time.sleep(Time2Takeoff) # wait for the specified time before takeoff
@@ -208,22 +210,64 @@ def cf2_control_fn(robotNo, robotPose, tb3B_poses, tb3W_poses, rmtt_poses, cf2_p
     elif not TAKEOFF_DONE and robotPose[2] > 0.1: # if the drone is taking off and takeoff is not done
         TAKEOFF_DONE = True
     elif TAKEOFF_DONE: 
-        goal = [-1.5,1,1]
-        ex = goal[0] - robotPose[0]
-        ey = goal[1] - robotPose[1]
-        ez = goal[2] - robotPose[2]
-        if abs(ex) > 0.1 or abs(ey) > 0.1 or abs(ez) > 0.1:
-            vx = 0.5 * ex
-            vy = 0.5 * ey
-            z_dist = 1.0
-            led = (random.randint(0,255), random.randint(0,255), random.randint(0,255)) # set random led color when the drone is flying
+        # 1. L'objectif est de l'autre côté du mur
+        goal = [2.0, 0.0, 1.0]
+        
+        # 2. DÉTECTION D'OBSTACLES
+        obstacle_detected = False
+        
+        for i in range(nbOBSTACLE):
+            # Centre de l'obstacle
+            obs_x = obstacle_pose[0, i]
+            obs_y = obstacle_pose[1, i]
+            obs_z = obstacle_pose[2, i]
+            
+            # Dimensions de l'obstacle
+            size_x = obstacle_size[0, i]
+            size_y = obstacle_size[1, i]
+            size_z = obstacle_size[2, i]
+            
+            # Calcul de la distance du drone par rapport à la surface de la boîte (Bounding Box)
+            # max(0, distance_au_centre - moitie_de_la_taille)
+            dx = max(0, abs(robotPose[0] - obs_x) - (size_x / 2.0))
+            dy = max(0, abs(robotPose[1] - obs_y) - (size_y / 2.0))
+            dz = max(0, abs(robotPose[2] - obs_z) - (size_z / 2.0))
+            
+            # Distance euclidienne réelle jusqu'à la surface de l'obstacle
+            dist_to_surface = math.sqrt(dx**2 + dy**2 + dz**2)
+            
+            # Si on est trop près, on lève le drapeau de détection
+            if dist_to_surface < d_safe:
+                obstacle_detected = True
+                break
+        
+        # 3. PRISE DE DÉCISION (Mouvement ou Arrêt)
+        if obstacle_detected:
+            # Freinage d'urgence ! On reste sur place.
+            vx = 0.0
+            vy = 0.0
+            z_dist = robotPose[2] # On maintient l'altitude actuelle
+            led = (255, 0, 0)     # On allume la LED en ROUGE pour signaler le blocage
+            
         else:
-            vx = 0
-            vy = 0
-            z_dist = 0
-            trigger_takeoff = False
-            trigger_land = True
-            TAKEOFF_DONE = False
+            # Voie libre, on avance vers l'objectif
+            ex = goal[0] - robotPose[0]
+            ey = goal[1] - robotPose[1]
+            ez = goal[2] - robotPose[2]
+            
+            if abs(ex) > 0.1 or abs(ey) > 0.1 or abs(ez) > 0.1:
+                vx = 0.5 * ex
+                vy = 0.5 * ey
+                z_dist = goal[2]
+                led = (0, 255, 0) # LED en VERT quand on bouge normalement
+            else:
+                # Objectif atteint
+                vx = 0.0
+                vy = 0.0
+                z_dist = 0.0
+                trigger_takeoff = False
+                trigger_land = True
+                TAKEOFF_DONE = False
 
     # -----------------------
 
