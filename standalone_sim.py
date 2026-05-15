@@ -19,16 +19,16 @@ Tb3W_pose = []
 nbRMTT = 0
 RMTT_pose = []
 
-# On place 1 drone CF2 à gauche du terrain
-nbCF2 = 1
-CF2_pose = [[-2.0, 0.0, 0.0]]  # x, y, z
+# On place 3 drones CF2 a gauche du terrain
+nbCF2 = 3
+CF2_pose = [[-2.1, -1.2, 0.0], [-2.1, 0.0, 0.0], [-2.1, 1.2, 0.0]]  # x, y, z
 
 nbRMEP = 0
 RMEP_pose = []
 
-nbObstacle = 1
-obstacle_size = [[0.8, 3.0, 2.5]]
-obstacle_pose = [[0.0, 0.0, 0.0]]
+nbObstacle = 2
+obstacle_size = [[0.8, 3.0, 2.5], [0.8, 1.2, 2.5]]
+obstacle_pose = [[0.0, 0.0, 0.0], [1.4, 2.2, 0.0]]
 
 # ==========================================
 # 2. HARDWARE SPECS (SPEEDS, RADII, TIMERS)
