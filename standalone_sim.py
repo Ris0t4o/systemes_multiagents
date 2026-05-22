@@ -2,33 +2,36 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from concurrent.futures import ThreadPoolExecutor
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 # Import the student's algorithms
 import tp_algos
 
 # ==========================================
 # 1. SIMULATION INPUTS & CONFIGURATION
 # ==========================================
+SIMULATION_STOPPED = False
+
 dt = 0.05  # Simulation time step (seconds)
 
 nbTb3B = 0
-Tb3B_pose = []
+Tb3B_pose = [[0.0, 1.4, 0.0], [0.0, -1.4, 0.0], [-1.4, 0.0, 0.0]]  # x, y, theta
 
 nbTb3W = 0
-Tb3W_pose = []
+Tb3W_pose = [[1.0, 0.0, 0.0]]  # x, y, theta
 
-nbRMTT = 0
-RMTT_pose = []
+nbRMTT = 1
+# Started at z=0.0 so we can see the 3s straight line takeoff
+RMTT_pose = [[0.0, 1.0, 0.0]]  # x, y, z 
 
-# On place 3 drones CF2 a gauche du terrain
-nbCF2 = 3
-CF2_pose = [[-2.1, -1.2, 0.0], [-2.1, 0.0, 0.0], [-2.1, 1.2, 0.0]]  # x, y, z
+nbCF2 = 1
+CF2_pose = [[-1.0, 0.0, 0.0]]  # x, y, z
 
 nbRMEP = 0
-RMEP_pose = []
+RMEP_pose = [[-1.0, -1.0, 0.0]]  # x, y, theta
 
 nbObstacle = 2
-obstacle_size = [[0.8, 3.0, 2.5], [0.8, 1.2, 2.5]]
-obstacle_pose = [[0.0, 0.0, 0.0], [1.4, 2.2, 0.0]]
+obstacle_size = [[1.0, 0.5, 2.5], [0.5, 1.1, 2.5]]
+obstacle_pose = [[0.0, 0.0, 0.0], [3.0, -3.0, 0.0]]
 
 # ==========================================
 # 2. HARDWARE SPECS (SPEEDS, RADII, TIMERS)
@@ -53,6 +56,12 @@ RMTT_HOVER_Z = 0.8
 CF2_HOVER_Z = 1.0
 TAKEOFF_TIME = 3.0 # seconds
 LANDING_TIME = 3.0 # seconds
+
+# ==========================================
+# VISION CONE PARAMETERS
+# ==========================================
+FOV_ANGLE = np.radians(60)
+FOV_RANGE = 2.5
 
 # Virtual Noise Standard Deviation (in meters per dt step)
 # 0.005 means ~5mm of random drift per simulation step
@@ -122,6 +131,10 @@ tb3B_globs = [None] * nbTb3B
 tb3W_globs = [None] * nbTb3W
 rmtt_globs = [None] * nbRMTT
 cf2_globs  = [None] * nbCF2
+# Vision cone display
+cf2_fov_lines = [None] * nbCF2
+cf2_yaws = [0.0] * nbCF2
+update_prev_cf2_positions = {}
 rmep_globs = [None] * nbRMEP
 
 clock_time = 0.0
@@ -162,6 +175,71 @@ def draw_glob(ax, x, y, z, radius, color):
     Y = y + radius * np.sin(u) * np.sin(v)
     Z = z + radius * np.cos(v)
     return ax.plot_wireframe(X, Y, Z, color=color, alpha=0.15)
+
+
+def draw_fov(ax, x, y, z, yaw, fov_angle, fov_range, detected=False):
+
+    n = 20
+
+    cone_radius = fov_range * np.tan(fov_angle / 2)
+
+    theta = np.linspace(0, 2*np.pi, n)
+
+    dx = np.cos(yaw)
+    dy = np.sin(yaw)
+
+    cx = x + fov_range * dx
+    cy = y + fov_range * dy
+    cz = z
+
+    ux = -dy
+    uy = dx
+
+    vx = 0
+    vy = 0
+    vz = 1
+
+    circle_points = []
+
+    for t in theta:
+
+        px = cx + cone_radius * (np.cos(t)*ux + np.sin(t)*vx)
+        py = cy + cone_radius * (np.cos(t)*uy + np.sin(t)*vy)
+        pz = cz + cone_radius * (np.cos(t)*0  + np.sin(t)*vz)
+
+        circle_points.append([px, py, pz])
+
+    faces = []
+
+    apex = [x, y, z]
+
+    for i in range(n-1):
+        faces.append([
+            apex,
+            circle_points[i],
+            circle_points[i+1]
+        ])
+
+    faces.append([
+        apex,
+        circle_points[-1],
+        circle_points[0]
+    ])
+
+    # COLOR CHANGES HERE
+    face_color = 'lime' if detected else 'red'
+    edge_color = 'green' if detected else 'darkred'
+
+    cone = Poly3DCollection(
+        faces,
+        alpha=0.25,
+        facecolor=face_color,
+        edgecolor=edge_color
+    )
+
+    ax.add_collection3d(cone)
+
+    return cone
 
 def check_boundary_collision(cx, cy, cz, r, is_drone, drone_state=None):
     if cx - r < X_MIN or cx + r > X_MAX: return True
@@ -219,187 +297,502 @@ def get_async_cmd(robot_type, idx, default_cmd, func, *args):
         
     return last_cmds.get(key, default_cmd)
 
+def point_in_cone(
+    tx, ty, tz,
+    cx, cy, cz,
+    yaw,
+    fov_angle,
+    fov_range
+):
+
+    dx = tx - cx
+    dy = ty - cy
+    dz = tz - cz
+
+    horizontal_dist = np.hypot(dx, dy)
+
+    # Too far away
+    if horizontal_dist > fov_range:
+        return False
+
+    # Ignore almost-zero distance
+    if horizontal_dist < 1e-6:
+        return True
+
+    angle_to_target = np.arctan2(dy, dx)
+
+    angle_error = np.arctan2(
+        np.sin(angle_to_target - yaw),
+        np.cos(angle_to_target - yaw)
+    )
+
+    return abs(angle_error) <= (fov_angle / 2)
+
 def update(frame):
+
+    global SIMULATION_STOPPED
     global clock_time
-    
-    # 1. First, Update all kinematics (calculate next step)
-    
-    # Snapshot of the world for the background threads
+    global update_prev_cf2_positions
+
+    if SIMULATION_STOPPED:
+        ani.event_source.stop()
+        return []
+
+    # ==========================================
+    # SNAPSHOTS
+    # ==========================================
+
     tb3B_snap = tb3B_poses.copy() if nbTb3B > 0 else tb3B_poses
     tb3W_snap = tb3W_poses.copy() if nbTb3W > 0 else tb3W_poses
     rmtt_snap = rmtt_poses.copy() if nbRMTT > 0 else rmtt_poses
-    cf2_snap  = cf2_poses.copy()  if nbCF2 > 0 else cf2_poses
+    cf2_snap  = cf2_poses.copy() if nbCF2 > 0 else cf2_poses
     rmep_snap = rmep_poses.copy() if nbRMEP > 0 else rmep_poses
 
-    # --- Update TB3 Burgers (Unicycle) ---
+    # ==========================================
+    # UPDATE TB3 BURGERS
+    # ==========================================
+
     for i in range(nbTb3B):
+
         pose = tb3B_poses[:, i]
+
         default = (0.0, 0.0)
-        vx, vy = get_async_cmd('tb3B', i, default, tp_algos.tb3B_controller, 
-                               i+1, pose.copy(), tb3B_snap, tb3W_snap, rmtt_snap, cf2_snap, rmep_snap, obs_poses, obs_sizes, [], clock_time)
-        
-        v, wz = unicycle_kinematics(vx, vy, pose[2], MAX_V_TB3B, MAX_W_TB3)
+
+        vx, vy = get_async_cmd(
+            'tb3B',
+            i,
+            default,
+            tp_algos.tb3B_controller,
+            i+1,
+            pose.copy(),
+            tb3B_snap,
+            tb3W_snap,
+            rmtt_snap,
+            cf2_snap,
+            rmep_snap,
+            obs_poses,
+            obs_sizes,
+            [],
+            clock_time
+        )
+
+        v, wz = unicycle_kinematics(
+            vx,
+            vy,
+            pose[2],
+            MAX_V_TB3B,
+            MAX_W_TB3
+        )
+
         tb3B_poses[0, i] += v * np.cos(pose[2]) * dt
         tb3B_poses[1, i] += v * np.sin(pose[2]) * dt
         tb3B_poses[2, i] += wz * dt
 
-    # --- Update TB3 Waffles (Unicycle) ---
+    # ==========================================
+    # UPDATE TB3 WAFFLES
+    # ==========================================
+
     for i in range(nbTb3W):
+
         pose = tb3W_poses[:, i]
+
         default = (0.0, 0.0)
-        vx, vy = get_async_cmd('tb3W', i, default, tp_algos.tb3W_controller, 
-                               i+1, pose.copy(), tb3B_snap, tb3W_snap, rmtt_snap, cf2_snap, rmep_snap, obs_poses, obs_sizes, [], clock_time)
-        
-        v, wz = unicycle_kinematics(vx, vy, pose[2], MAX_V_TB3W, MAX_W_TB3)
+
+        vx, vy = get_async_cmd(
+            'tb3W',
+            i,
+            default,
+            tp_algos.tb3W_controller,
+            i+1,
+            pose.copy(),
+            tb3B_snap,
+            tb3W_snap,
+            rmtt_snap,
+            cf2_snap,
+            rmep_snap,
+            obs_poses,
+            obs_sizes,
+            [],
+            clock_time
+        )
+
+        v, wz = unicycle_kinematics(
+            vx,
+            vy,
+            pose[2],
+            MAX_V_TB3W,
+            MAX_W_TB3
+        )
+
         tb3W_poses[0, i] += v * np.cos(pose[2]) * dt
         tb3W_poses[1, i] += v * np.sin(pose[2]) * dt
         tb3W_poses[2, i] += wz * dt
 
-    # --- Update RMTT Drones ---
+    # ==========================================
+    # UPDATE RMTT DRONES
+    # ==========================================
+
     for i in range(nbRMTT):
+
         pose = rmtt_poses[:, i]
+
         default = (0.0, 0.0, 0.0, False, (0,0,0))
-        vx, vy, vz, trigger_land, led = get_async_cmd('rmtt', i, default, tp_algos.rmtt_controller, 
-                                                      i+1, pose.copy(), tb3B_snap, tb3W_snap, rmtt_snap, cf2_snap, rmep_snap, obs_poses, obs_sizes, clock_time)
-        
-        # State Machine Logic
-        if rmtt_states[i] == 1:   
-             rmtt_poses[2, i] += (RMTT_HOVER_Z / TAKEOFF_TIME) * dt
-             rmtt_timers[i] -= dt
-             if rmtt_timers[i] <= 0:
-                 rmtt_poses[2, i] = RMTT_HOVER_Z
-                 rmtt_states[i] = 2   
-                 
-        elif rmtt_states[i] == 2: 
-             if trigger_land:
-                 rmtt_states[i] = 3   
-                 rmtt_timers[i] = LANDING_TIME
-             else:
-                 vx, vy, vz = clamp_vel3d(vx, vy, vz, MAX_V_RMTT)
-                 rmtt_poses[0, i] += vx * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
-                 rmtt_poses[1, i] += vy * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
-                 rmtt_poses[2, i] += vz * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
-                 
-        elif rmtt_states[i] == 3: 
-             rmtt_poses[2, i] -= (RMTT_HOVER_Z / LANDING_TIME) * dt
-             rmtt_timers[i] -= dt
-             if rmtt_timers[i] <= 0 or rmtt_poses[2, i] <= 0:
-                 rmtt_poses[2, i] = 0.0
-                 rmtt_states[i] = 0   
 
-    # --- Update CF2 Drones ---
+        vx, vy, vz, trigger_land, led = get_async_cmd(
+            'rmtt',
+            i,
+            default,
+            tp_algos.rmtt_controller,
+            i+1,
+            pose.copy(),
+            tb3B_snap,
+            tb3W_snap,
+            rmtt_snap,
+            cf2_snap,
+            rmep_snap,
+            obs_poses,
+            obs_sizes,
+            clock_time
+        )
+
+        if rmtt_states[i] == 1:
+
+            rmtt_poses[2, i] += (RMTT_HOVER_Z / TAKEOFF_TIME) * dt
+            rmtt_timers[i] -= dt
+
+            if rmtt_timers[i] <= 0:
+
+                rmtt_poses[2, i] = RMTT_HOVER_Z
+                rmtt_states[i] = 2
+
+        elif rmtt_states[i] == 2:
+
+            if trigger_land:
+
+                rmtt_states[i] = 3
+                rmtt_timers[i] = LANDING_TIME
+
+            else:
+
+                vx, vy, vz = clamp_vel3d(
+                    vx,
+                    vy,
+                    vz,
+                    MAX_V_RMTT
+                )
+
+                rmtt_poses[0, i] += vx * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
+                rmtt_poses[1, i] += vy * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
+                rmtt_poses[2, i] += vz * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
+
+        elif rmtt_states[i] == 3:
+
+            rmtt_poses[2, i] -= (RMTT_HOVER_Z / LANDING_TIME) * dt
+            rmtt_timers[i] -= dt
+
+            if rmtt_timers[i] <= 0 or rmtt_poses[2, i] <= 0:
+
+                rmtt_poses[2, i] = 0.0
+                rmtt_states[i] = 0
+
+    # ==========================================
+    # UPDATE CF2 DRONES
+    # ==========================================
+
     for i in range(nbCF2):
+
         pose = cf2_poses[:, i]
+
         default = (0.0, 0.0, pose[2], False, False, (0,0,0))
-        vx, vy, z_dist, trigger_takeoff, trigger_land, led = get_async_cmd('cf2', i, default, tp_algos.cf2_controller, 
-                                                                           i+1, pose.copy(), tb3B_snap, tb3W_snap, rmtt_snap, cf2_snap, rmep_snap, obs_poses, obs_sizes, clock_time)
-        
-        # State Machine Logic
-        if cf2_states[i] == 0:    
-             if trigger_takeoff:
-                 cf2_states[i] = 1
-                 cf2_timers[i] = TAKEOFF_TIME
-                 
-        elif cf2_states[i] == 1:  
-             cf2_poses[2, i] += (CF2_HOVER_Z / TAKEOFF_TIME) * dt
-             cf2_timers[i] -= dt
-             if cf2_timers[i] <= 0:
-                 cf2_poses[2, i] = CF2_HOVER_Z
-                 cf2_states[i] = 2   
-                 
-        elif cf2_states[i] == 2:  
-             if trigger_land:
-                 cf2_states[i] = 3
-                 cf2_timers[i] = LANDING_TIME
-             else:
-                 vz = (z_dist - cf2_poses[2, i])
-                 vx, vy, vz = clamp_vel3d(vx, vy, vz, MAX_V_CF2)
-                 cf2_poses[0, i] += vx * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
-                 cf2_poses[1, i] += vy * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
-                 cf2_poses[2, i] += vz * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
-                 
-        elif cf2_states[i] == 3:  
-             cf2_poses[2, i] -= (CF2_HOVER_Z / LANDING_TIME) * dt
-             cf2_timers[i] -= dt
-             if cf2_timers[i] <= 0 or cf2_poses[2, i] <= 0:
-                 cf2_poses[2, i] = 0.0
-                 cf2_states[i] = 0   
 
-    # --- Update RMEP Robots ---
-    for i in range(nbRMEP):
-        pose = rmep_poses[:, i]
-        default = (0.0, 0.0, 0.0)
-        vx, vy, wz = get_async_cmd('rmep', i, default, tp_algos.rmep_controller, 
-                                   i+1, pose.copy(), tb3B_snap, tb3W_snap, rmtt_snap, cf2_snap, rmep_snap, obs_poses, obs_sizes, clock_time)
-        
-        vx, vy = clamp_vel2d(vx, vy, MAX_V_RMEP)
-        rmep_poses[0, i] += vx * dt
-        rmep_poses[1, i] += vy * dt
-        rmep_poses[2, i] += wz * dt
+        vx, vy, z_dist, trigger_takeoff, trigger_land, led = get_async_cmd(
+            'cf2',
+            i,
+            default,
+            tp_algos.cf2_controller,
+            i+1,
+            pose.copy(),
+            tb3B_snap,
+            tb3W_snap,
+            rmtt_snap,
+            cf2_snap,
+            rmep_snap,
+            obs_poses,
+            obs_sizes,
+            clock_time
+        )
 
+        if cf2_states[i] == 0:
 
-    # 2. Gather state information for collision detection
-    # Format: [name_id, x, y, z, glob_radius, default_color, draw_glob_ref, plot_ref, drone_state]
+            if trigger_takeoff:
+
+                cf2_states[i] = 1
+                cf2_timers[i] = TAKEOFF_TIME
+
+        elif cf2_states[i] == 1:
+
+            cf2_poses[2, i] += (CF2_HOVER_Z / TAKEOFF_TIME) * dt
+            cf2_timers[i] -= dt
+
+            if cf2_timers[i] <= 0:
+
+                cf2_poses[2, i] = CF2_HOVER_Z
+                cf2_states[i] = 2
+
+        elif cf2_states[i] == 2:
+
+            # ------------------------------------------
+            # UPDATE DRONE YAW FIRST
+            # ------------------------------------------
+
+            if i not in update_prev_cf2_positions:
+                update_prev_cf2_positions[i] = (
+                    cf2_poses[0, i],
+                    cf2_poses[1, i]
+                )
+
+            prev_x, prev_y = update_prev_cf2_positions[i]
+
+            dx_yaw = cf2_poses[0, i] - prev_x
+            dy_yaw = cf2_poses[1, i] - prev_y
+
+            speed_yaw = np.hypot(dx_yaw, dy_yaw)
+
+            if speed_yaw > 1e-4:
+
+                cf2_yaws[i] = np.arctan2(dy_yaw, dx_yaw)
+
+            update_prev_cf2_positions[i] = (
+                cf2_poses[0, i],
+                cf2_poses[1, i]
+            )
+
+            # ------------------------------------------
+            # TARGET DETECTION
+            # ------------------------------------------
+
+            target_detected = False
+
+            for j in range(nbRMTT):
+
+                tx = rmtt_poses[0, j]
+                ty = rmtt_poses[1, j]
+                tz = rmtt_poses[2, j]
+
+                if point_in_cone(
+                    tx,
+                    ty,
+                    tz,
+                    cf2_poses[0, i],
+                    cf2_poses[1, i],
+                    cf2_poses[2, i],
+                    cf2_yaws[i],
+                    FOV_ANGLE,
+                    FOV_RANGE
+                ):
+
+                    target_detected = True
+                    break
+
+            # ------------------------------------------
+            # STOP SIMULATION IMMEDIATELY
+            # ------------------------------------------
+
+            if target_detected:
+
+                print("TARGET FOUND — STOPPING SIMULATION")
+
+                SIMULATION_STOPPED = True
+
+                cf2_states[i] = 3
+                cf2_timers[i] = LANDING_TIME
+
+            else:
+
+                vz = (z_dist - cf2_poses[2, i])
+
+                vx, vy, vz = clamp_vel3d(
+                    vx,
+                    vy,
+                    vz,
+                    MAX_V_CF2
+                )
+
+                cf2_poses[0, i] += vx * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
+                cf2_poses[1, i] += vy * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
+                cf2_poses[2, i] += vz * dt + np.random.normal(0, DRONE_POS_NOISE_STD)
+
+        elif cf2_states[i] == 3:
+
+            cf2_poses[2, i] -= (CF2_HOVER_Z / LANDING_TIME) * dt
+            cf2_timers[i] -= dt
+
+            if cf2_timers[i] <= 0 or cf2_poses[2, i] <= 0:
+
+                cf2_poses[2, i] = 0.0
+                cf2_states[i] = 0
+
+ # ==========================================
+# DRAW ROBOTS + GLOBS
+# ==========================================
+
     all_robots = []
+
     for i in range(nbTb3B):
-        all_robots.append(["TB3B_" + str(i+1), tb3B_poses[0,i], tb3B_poses[1,i], 0.1, RAD_TB3B*2, 'blue', tb3B_globs, i, tb3B_plots, None])
+        all_robots.append([
+            tb3B_poses[0,i],
+            tb3B_poses[1,i],
+            0.1,
+            RAD_TB3B*2,
+            'blue',
+            tb3B_globs,
+            tb3B_plots,
+            i
+        ])
+
     for i in range(nbTb3W):
-        all_robots.append(["TB3W_" + str(i+1), tb3W_poses[0,i], tb3W_poses[1,i], 0.15, RAD_TB3W*2, 'cyan', tb3W_globs, i, tb3W_plots, None])
+        all_robots.append([
+            tb3W_poses[0,i],
+            tb3W_poses[1,i],
+            0.15,
+            RAD_TB3W*2,
+            'cyan',
+            tb3W_globs,
+            tb3W_plots,
+            i
+        ])
+
     for i in range(nbRMTT):
-        all_robots.append(["RMTT_" + str(i+1), rmtt_poses[0,i], rmtt_poses[1,i], rmtt_poses[2,i], RAD_RMTT*2, 'orange', rmtt_globs, i, rmtt_plots, rmtt_states[i]])
+        all_robots.append([
+            rmtt_poses[0,i],
+            rmtt_poses[1,i],
+            rmtt_poses[2,i],
+            RAD_RMTT*2,
+            'orange',
+            rmtt_globs,
+            rmtt_plots,
+            i
+        ])
+
     for i in range(nbCF2):
-        all_robots.append(["CF2_" + str(i+1), cf2_poses[0,i], cf2_poses[1,i], cf2_poses[2,i], RAD_CF2*2, 'green', cf2_globs, i, cf2_plots, cf2_states[i]])
+        all_robots.append([
+            cf2_poses[0,i],
+            cf2_poses[1,i],
+            cf2_poses[2,i],
+            RAD_CF2*2,
+            'green',
+            cf2_globs,
+            cf2_plots,
+            i
+        ])
+
     for i in range(nbRMEP):
-        all_robots.append(["RMEP_" + str(i+1), rmep_poses[0,i], rmep_poses[1,i], 0.0, RAD_RMEP*2, 'magenta', rmep_globs, i, rmep_plots, None])
+        all_robots.append([
+            rmep_poses[0,i],
+            rmep_poses[1,i],
+            0.0,
+            RAD_RMEP*2,
+            'magenta',
+            rmep_globs,
+            rmep_plots,
+            i
+        ])
 
-    # 3. Check Collisions & Assign Target Colors
-    collision_states = {rob[0]: False for rob in all_robots}
-
+    # Draw markers + globs
     for rob in all_robots:
-        name, cx, cy, cz, r, drone_state = rob[0], rob[1], rob[2], rob[3], rob[4], rob[9]
-        is_drone = name.startswith("RMTT") or name.startswith("CF2")
-        
-        if check_boundary_collision(cx, cy, cz, r, is_drone, drone_state):
-            log_key = f"{name}_boundary"
-            if clock_time - last_log_time.get(log_key, -1.0) >= 1.0:
-                print(f"[WARNING] {name} is colliding with the environment boundary!")
-                last_log_time[log_key] = clock_time
-            collision_states[name] = True
-            
-        elif check_obstacle_collision(cx, cy, cz, r):
-            log_key = f"{name}_obstacle"
-            if clock_time - last_log_time.get(log_key, -1.0) >= 1.0:
-                print(f"[WARNING] {name} is colliding with an obstacle!")
-                last_log_time[log_key] = clock_time
-            collision_states[name] = True
 
-    for i in range(len(all_robots)):
-        for j in range(i + 1, len(all_robots)):
-            name1, x1, y1, z1, r1 = all_robots[i][0:5]
-            name2, x2, y2, z2, r2 = all_robots[j][0:5]
-            dist = np.sqrt((x2 - x1)**2 + (y2 - y1)**2 + (z2 - z1)**2)
-            if dist < (r1 + r2):
-                log_key = f"{name1}_{name2}_collision"
-                if clock_time - last_log_time.get(log_key, -1.0) >= 1.0:
-                    print(f"[WARNING] {name1} and {name2} are intersecting/colliding!")
-                    last_log_time[log_key] = clock_time
-                collision_states[name1] = True
-                collision_states[name2] = True
+        x, y, z, radius, color, glob_list, plot_list, idx = rob
 
+        plot_list[idx].set_data([x], [y])
+        plot_list[idx].set_3d_properties([z])
 
-    # 4. Final Rendering
-    for rob in all_robots:
-        name, cx, cy, cz, glob_r, default_color, glob_list, idx, plot_list, drone_state = rob
-        plot_list[idx].set_data([cx], [cy])
-        plot_list[idx].set_3d_properties([cz])
-        
-        target_color = 'red' if collision_states[name] else default_color
-        
-        if glob_list[idx]: glob_list[idx].remove()
-        glob_list[idx] = draw_glob(ax, cx, cy, cz, glob_r, target_color)
+        if glob_list[idx] is not None:
+            glob_list[idx].remove()
+
+        glob_list[idx] = draw_glob(
+            ax,
+            x,
+            y,
+            z,
+            radius,
+            color
+        )
+
+    # ==========================================
+    # DRAW CF2 CONES
+    # ==========================================
+
+    for i in range(nbCF2):
+
+        x = cf2_poses[0, i]
+        y = cf2_poses[1, i]
+        z = cf2_poses[2, i]
+
+        if cf2_fov_lines[i] is not None:
+            cf2_fov_lines[i].remove()
+
+        if i not in update_prev_cf2_positions:
+            update_prev_cf2_positions[i] = (x, y)
+
+        prev_x, prev_y = update_prev_cf2_positions[i]
+
+        dx = x - prev_x
+        dy = y - prev_y
+
+        speed = np.hypot(dx, dy)
+
+        if speed > 1e-4:
+
+            target_yaw = np.arctan2(dy, dx)
+
+            yaw_error = np.arctan2(
+                np.sin(target_yaw - cf2_yaws[i]),
+                np.cos(target_yaw - cf2_yaws[i])
+            )
+
+            cf2_yaws[i] += 0.15 * yaw_error
+
+        update_prev_cf2_positions[i] = (x, y)
+
+        detected = False
+
+        for j in range(nbRMTT):
+
+            if point_in_cone(
+                rmtt_poses[0, j],
+                rmtt_poses[1, j],
+                rmtt_poses[2, j],
+                x,
+                y,
+                z,
+                cf2_yaws[i],
+                FOV_ANGLE,
+                FOV_RANGE
+            ):
+
+                detected = True
+                break
+
+        cf2_fov_lines[i] = draw_fov(
+            ax,
+            x,
+            y,
+            z,
+            cf2_yaws[i],
+            FOV_ANGLE,
+            FOV_RANGE,
+            detected
+        )
 
     clock_time += dt
-    return tb3B_plots + tb3W_plots + rmtt_plots + cf2_plots + rmep_plots
+
+    return (
+        tb3B_plots
+        + tb3W_plots
+        + rmtt_plots
+        + cf2_plots
+        + rmep_plots
+    )
 
 ani = animation.FuncAnimation(fig, update, interval=int(dt*1000), blit=False, cache_frame_data=False)
 
