@@ -8,27 +8,28 @@ import tp_algos
 # ==========================================
 # 1. SIMULATION INPUTS & CONFIGURATION
 # ==========================================
-dt = 0.05  # Simulation time step (seconds)
+dt = 0.1  
 
 nbTb3B = 0
 Tb3B_pose = []
-
 nbTb3W = 0
 Tb3W_pose = []
-
 nbRMTT = 0
 RMTT_pose = []
 
-# On place 3 drones CF2 a gauche du terrain
+# --- DÉPLOIEMENT DES DRONES ---
 nbCF2 = 3
-CF2_pose = [[-2.1, -1.2, 0.0], [-2.1, 0.0, 0.0], [-2.1, 1.2, 0.0]]  # x, y, z
+# On les place au "Point A" (à gauche), légèrement espacés
+CF2_pose = [[-2.0, 0.0, 0.0], [-1, -1.0, 0.0], [-1.5, -1.5, 0.0]]  
 
 nbRMEP = 0
 RMEP_pose = []
 
-nbObstacle = 2
-obstacle_size = [[0.8, 3.0, 2.5], [0.8, 1.2, 2.5]]
-obstacle_pose = [[0.0, 0.0, 0.0], [1.4, 2.2, 0.0]]
+# --- OBSTACLES ---
+nbObstacle = 3
+# Un mur au centre qui bloque la route vers le Point B
+obstacle_size = [[0.8, 2.0, 2.5],[1.8, 1.0, 2.5],[0.5, 1.5, 2.5]]
+obstacle_pose = [[1.0, -2.0, 0.0],[0.0, 3.0, 0.0],[-1.0, 0.0, 0.0]]
 
 # ==========================================
 # 2. HARDWARE SPECS (SPEEDS, RADII, TIMERS)
@@ -102,6 +103,10 @@ ax.set_ylim([Y_MIN, Y_MAX])
 ax.set_zlim([Z_MIN, Z_MAX])
 ax.set_box_aspect((5, 9, 3.5))
 
+# --- AJOUT DU TIMER SUR L'ÉCRAN ---
+# transform=ax.transAxes permet de fixer le texte par rapport à l'écran, pas à la carte 3D
+time_text = ax.text2D(0.05, 0.95, "Temps: 0.0 s", transform=ax.transAxes, fontsize=12, weight='bold', color='darkred')
+
 # Draw Obstacles as 3D bars
 for i in range(nbObstacle):
     x, y, z = obs_poses[:, i]
@@ -157,7 +162,8 @@ def unicycle_kinematics(vx, vy, theta, max_v, max_w):
 
 def draw_glob(ax, x, y, z, radius, color):
     """Draws a semi-transparent wireframe sphere representing the safety glob"""
-    u, v = np.mgrid[0:2*np.pi:12j, 0:np.pi:8j]
+    # OPTIMISATION CPU : Réduction drastique de la géométrie de la sphère
+    u, v = np.mgrid[0:2*np.pi:6j, 0:np.pi:4j]
     X = x + radius * np.cos(u) * np.sin(v)
     Y = y + radius * np.sin(u) * np.sin(v)
     Z = z + radius * np.cos(v)
@@ -392,12 +398,14 @@ def update(frame):
         name, cx, cy, cz, glob_r, default_color, glob_list, idx, plot_list, drone_state = rob
         plot_list[idx].set_data([cx], [cy])
         plot_list[idx].set_3d_properties([cz])
+
+        ax.plot([cx], [cy], [cz], marker='.', color=default_color, markersize=2, alpha=0.3)
         
         target_color = 'red' if collision_states[name] else default_color
         
         if glob_list[idx]: glob_list[idx].remove()
         glob_list[idx] = draw_glob(ax, cx, cy, cz, glob_r, target_color)
-
+    time_text.set_text(f"Temps: {clock_time:.1f} s")
     clock_time += dt
     return tb3B_plots + tb3W_plots + rmtt_plots + cf2_plots + rmep_plots
 
