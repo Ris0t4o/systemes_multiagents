@@ -1,0 +1,735 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{microtype}
+
+\geometry{margin=2.5cm}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!60!black,
+    citecolor=blue!50!black,
+}
+
+\definecolor{kw}{rgb}{0.13,0.29,0.53}
+\definecolor{str}{rgb}{0.58,0.0,0.0}
+\definecolor{com}{rgb}{0.25,0.50,0.35}
+\definecolor{bg}{gray}{0.97}
+
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    backgroundcolor=\color{bg},
+    keywordstyle=\color{kw}\bfseries,
+    stringstyle=\color{str},
+    commentstyle=\color{com}\itshape,
+    showstringspaces=false,
+    breaklines=true,
+    frame=single,
+    framerule=0.3pt,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    language=Python,
+}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\vect}[1]{\mathbf{#1}}
+
+\title{Hide-and-Seek Drone Swarm \\
+       \large CentraleSup\'elec Multi-Agent Systems --- Technical Report}
+\author{Amine Mahdane}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report describes the design and implementation of a multi-agent
+hide-and-seek system in which a single airborne \emph{seeker} drone tries to
+spot a group of \emph{hider} drones that hide behind obstacles. The system is
+built on top of the CentraleSup\'elec Vol\`iere TP framework: every drone
+controller is a Python function that the simulator (\code{standalone\_sim.py})
+calls each tick with the current world state, and must return a velocity
+command. The contribution of this work lies in the modules around
+\code{tp\_algos.py}: an obstacle-consensus law with both an asymptotic linear
+term and a barrier term; a 3D field-of-view sensor; a shared-memory broadcast
+channel between hiders; and a cover-seeking primitive that picks a point
+geometrically behind an obstacle relative to the last-known seeker pose. The
+overall control law combines a Lissajous roaming target, a consensus-based
+obstacle push, inter-drone separation, and soft boundary repulsion, with a
+single magnitude saturation at the actuator limit.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+% ============================================================
+\section{Project context and high-level architecture}
+% ============================================================
+
+The project is a CentraleSup\'elec TP (2A/3A) on multi-agent systems. The
+target hardware platforms are Crazyflie 2 nano-quadrotors (acting as hiders)
+and a DJI RoboMaster TT drone (acting as the seeker), flying inside the
+school's \emph{Vol\`iere} arena. The pedagogical aim is to use a hide-and-seek
+game as an accessible illustration of multi-agent control, both for the
+students implementing it and for the children visiting the Vol\`iere.
+
+\paragraph{Rules of the game.}
+\begin{itemize}[leftmargin=1.4em]
+  \item A single seeker drone (RMTT) cruises the arena on a slow sweep path.
+        It \emph{never receives the hiders' positions} -- it has to find them
+        with vision.
+  \item Several hider drones (CF2) roam the arena. They know the seeker's
+        position only through \emph{their own vision} (a forward cone), and
+        only communicate sightings to each other through a shared broadcast
+        channel.
+  \item When the seeker's forward cone contains a hider \emph{and} the line
+        of sight is not occluded by an obstacle, the hider is ``caught'' and
+        triggered to land.
+\end{itemize}
+
+\paragraph{Module decomposition.}
+The code base is split into small files that each address one concern:
+
+\begin{longtable}{p{4cm}p{10cm}}
+\toprule
+\textbf{Module} & \textbf{Role} \\
+\midrule
+\code{standalone\_sim.py} & The simulator. Owns the world state, calls each
+robot's controller in a thread pool, integrates kinematics, detects
+collisions, renders the 3D figure. \emph{Untouched in this project.} \\
+\code{tp\_algos.py} & The required entry-point file (prof requirement). The
+controller stubs there delegate to the modules below. \emph{Edits kept
+minimal.} \\
+\code{cf2\_milestone1.py} & Top-level hider controller: composes a goal force,
+obstacle consensus, inter-drone separation, and boundary repulsion; switches
+between roaming and cover-seeking. \\
+\code{cf2\_sensing.py} & The hider's sensing primitives: intent heading and
+FoV-cone obstacle sensing on an axis-aligned bounding box (AABB) model. \\
+\code{cf2\_consensus.py} & The obstacle consensus law (linear + barrier),
+used by both hiders and seeker. \\
+\code{cf2\_hider.py} & Inter-hider communication (shared seeker-sighting
+memory) and the cover-target geometry. \\
+\code{rmtt\_seeker.py} & Seeker controller and the \code{can\_see} predicate
+shared with the referee and the hiders' seeker-detection logic. \\
+\code{game\_referee.py} & Per-frame catch detection using the same
+\code{can\_see} predicate as the seeker's vision cone. \\
+\code{sim\_viz.py} & Visualization overlays: 3D FoV cones, position trails,
+status HUD. \\
+\bottomrule
+\end{longtable}
+
+\paragraph{Data flow.}
+At each tick $t = k\,\Delta t$ ($\Delta t = 0.05\,\text{s}$), the simulator:
+\begin{enumerate}[leftmargin=1.4em]
+  \item Snapshots all pose arrays so the controllers see a consistent world.
+  \item Submits each robot's controller to a thread pool. The controller
+        returns a target velocity (and for drones, a target altitude / takeoff
+        / land flags).
+  \item Integrates the returned commands with a simple Euler step, applies
+        the actuator-rate saturations, adds a Gaussian position noise term
+        ($\sigma = 5\,\text{mm}$ per step).
+  \item Calls \code{game\_referee.update\_catches} to mark any catches.
+  \item Runs collision detection (boundary, obstacle, robot-to-robot) and
+        colours the robots' safety globes red on contact.
+  \item Calls \code{sim\_viz.update} to refresh cones, trails and the HUD.
+\end{enumerate}
+
+% ============================================================
+\section{Mathematical model}
+% ============================================================
+
+\subsection{State and kinematics}
+
+Each drone is modelled as a point mass with state
+$\vect{p}_i = (x_i, y_i, z_i)^\top \in \mathbb{R}^3$ and a velocity command
+$\vect{u}_i = (v_x, v_y, v_z)^\top$. The integration is a forward Euler step
+with Gaussian noise:
+\[
+    \vect{p}_i(t+\Delta t) \;=\; \vect{p}_i(t) + \vect{u}_i \Delta t + \vect{\eta}_i,
+    \qquad
+    \vect{\eta}_i \sim \mathcal{N}\!\left(\vect{0}, \sigma^2 \vect{I}_3\right),
+    \qquad \sigma = 0.005\,\text{m}.
+\]
+Before integration the simulator applies a 3D magnitude clamp at the actuator
+limit (\code{clamp\_vel3d} in \code{standalone\_sim.py}).
+
+For CF2 the controller actually returns $(v_x, v_y, z_\mathrm{dist})$ where
+$z_\mathrm{dist}$ is the \emph{desired altitude}. The simulator converts it to
+a vertical velocity $v_z = z_\mathrm{dist} - z$ and applies the 3D clamp on
+$(v_x, v_y, v_z)$ together.
+
+\subsection{Obstacles}
+
+Obstacles are axis-aligned bounding boxes (AABBs) standing on the floor:
+\[
+    \mathcal{B}_j \;=\; [o_x - \tfrac{s_x}{2},\, o_x + \tfrac{s_x}{2}]
+                       \times[o_y - \tfrac{s_y}{2},\, o_y + \tfrac{s_y}{2}]
+                       \times[0,\, s_z].
+\]
+The closest point on $\mathcal{B}_j$ to a query point $\vect{p}$ is the per-axis
+clamp of $\vect{p}$ into the box, which collapses to $\vect{p}$ itself when
+$\vect{p} \in \mathcal{B}_j$.
+
+% ============================================================
+\section{Hider controller (\code{cf2\_milestone1.py})}
+% ============================================================
+
+\subsection{Force composition}
+
+The controller assembles four terms:
+\[
+    \vect{F}_\mathrm{total}
+    \;=\; \vect{F}_\mathrm{goal}
+        + \vect{F}_\mathrm{obs}
+        + \vect{F}_\mathrm{sep}
+        + \vect{F}_\mathrm{bnd},
+\]
+and outputs the planar component of $\vect{F}_\mathrm{total}$ after a
+magnitude saturation at $v_\mathrm{max} = 0.45\,\text{m/s}$ (chosen below the
+hardware cap $\text{MAX\_V\_CF2} = 0.6\,\text{m/s}$ to leave headroom for the
+vertical channel inside the simulator's 3D clamp).
+
+\subsubsection*{Goal attraction}
+\[
+    \vect{F}_\mathrm{goal} \;=\; k_g \,(\vect{p}_\mathrm{goal} - \vect{p}),
+    \qquad k_g = 0.65.
+\]
+The goal is either the drone's Lissajous waypoint (Sec.~\ref{sec:lissajous})
+or its cover target (Sec.~\ref{sec:cover}), depending on whether the swarm is
+in roaming or hide mode.
+
+\subsubsection*{Obstacle consensus}
+Each sensed obstacle $j$ contributes (see Sec.~\ref{sec:consensus})
+\[
+    \vect{F}^{(j)}_\mathrm{obs} \;=\;
+    \underbrace{k_\mathrm{obs}\,\max(0, r_\mathrm{safe} - d_j)}_{\text{linear}}
+    \,\vect{n}_j
+    \;+\;
+    \underbrace{k_\mathrm{bar}\!\left(\frac{r_\mathrm{safe}}{\max(d_j,\varepsilon)} - 1\right)}_{\text{barrier}}
+    \,\vect{n}_j,
+\]
+with $d_j$ the distance to the obstacle surface, $\vect{n}_j$ the outward
+normal (surface $\to$ drone), and $\varepsilon = 0.02\,r_\mathrm{safe}$.
+
+\subsubsection*{Inter-drone separation}
+For each other hider $k$ within $d_0 = 0.9\,\text{m}$:
+\[
+    \vect{F}^{(k)}_\mathrm{sep} \;=\;
+    g_\mathrm{sep}\,
+    \frac{1}{d_{ik}^{\,2}}
+    \!\left(\frac{1}{d_{ik}} - \frac{1}{d_0}\right)
+    \,\hat{\vect{e}}_{ki},
+    \qquad g_\mathrm{sep} = 5.0,
+\]
+with $\hat{\vect{e}}_{ki} = (\vect{p}_i - \vect{p}_k)/\|\vect{p}_i - \vect{p}_k\|$
+(2D). The shape vanishes smoothly at $d = d_0$ and grows unbounded as $d \to 0$
+-- the same philosophy as the obstacle barrier, but between drones.
+
+\subsubsection*{Boundary repulsion}
+Each wall at distance $d$ inside a margin $m = 0.6\,\text{m}$ pushes inward:
+\[
+    F_\mathrm{bnd}^{(w)} \;=\;
+    g_\mathrm{bnd}\!\left(\frac{1}{\max(d,10^{-4})} - \frac{1}{m}\right),
+    \qquad g_\mathrm{bnd} = 0.09.
+\]
+The gain is intentionally small ($0.09$) -- the goal is a gentle nudge, not a
+hard bounce.
+
+\subsection{Lissajous roaming path}
+\label{sec:lissajous}
+
+Each hider $i$ tracks a 3D Lissajous waypoint
+\[
+    \vect{p}_\mathrm{goal}^{(i)}(t)
+    \;=\;
+    \begin{pmatrix}
+        c_x + A_x \sin(\omega_x^{(i)} t + \varphi_x^{(i)}) \\
+        c_y + A_y \sin(\omega_y^{(i)} t + \varphi_y^{(i)}) \\
+        c_z
+    \end{pmatrix},
+\]
+with $A_x = 1.6$, $A_y = 3.0$, $c_z = 1.0$, and per-drone angular frequencies
+$\omega_x^{(i)} = 0.16 + 0.018(i-1)$ rad/s (analogous for $y, z$), and coprime
+phase offsets $\varphi^{(i)}_x = (i-1)\cdot 2\pi/3$, $\varphi^{(i)}_y = (i-1)\cdot 2\pi/5$,
+$\varphi^{(i)}_z = (i-1)\cdot 2\pi/7$. The amplitudes are chosen so the path
+sits inside the boundary-repulsion margin, and the per-drone variation in
+$\omega$ prevents the swarm from collapsing onto a single shared orbit.
+
+The $z$-component is currently held constant at $c_z$; a slow vertical wobble
+is available via $A_z = 0.5$ but is commented out so the FoV cones stay at a
+predictable altitude in the visualization.
+
+\subsection{Mode switching: roam vs.\ hide}
+
+The hiders communicate seeker sightings through a single module-level dict in
+\code{cf2\_hider.py}. The mode logic in \code{compute\_roaming\_cmd} is:
+\begin{enumerate}[leftmargin=1.4em]
+  \item Compute the FoV-based seeker detection: if \code{can\_see(self,
+        seeker, intent\_heading, FOV\_HALF\_ANGLE = 60$^\circ$, range = 3.0\,m)},
+        call \code{report\_seeker\_sighting(seeker\_pos, t)}.
+  \item Read the shared memory via \code{get\_last\_seen(t)}. If a sighting
+        is fresher than $\text{TTL} = 8\,\text{s}$, switch the goal target
+        to the cover point (next section); otherwise, use the Lissajous
+        target.
+\end{enumerate}
+The structural asymmetry is important: the seeker controller never reads or
+writes the shared memory, so ``hiders can talk to each other but the seeker
+can't listen'' is enforced by interface, not by convention.
+
+\subsection{Cover-seeking geometry}
+\label{sec:cover}
+
+Given a last-known seeker position $\vect{s}$, the function
+\code{seek\_cover\_target} picks an $xy$ point behind one of the obstacles.
+For each obstacle with center $\vect{o}_j$ and half-extents $(h_x, h_y)$:
+\begin{enumerate}[leftmargin=1.4em]
+  \item Form the unit direction $\vect{u} = (\vect{o}_j - \vect{s})/\|\vect{o}_j -
+        \vect{s}\|$ from the seeker to the obstacle center.
+  \item Compute the parametric exit distance of the ray
+        $\vect{o}_j + t\,\vect{u}$ from the obstacle's AABB:
+        \[
+            t_\mathrm{surf} \;=\; \min\!\left( \frac{h_x}{|u_x|},
+                                               \frac{h_y}{|u_y|} \right),
+        \]
+        with the obvious degenerate handling when one of $u_x, u_y$ is zero.
+  \item The cover candidate is
+        \(
+            \vect{c}_j = \vect{o}_j + (t_\mathrm{surf} + d_\mathrm{cov})\,\vect{u},
+        \)
+        with $d_\mathrm{cov} = 0.8\,\text{m}$.
+\end{enumerate}
+The hider picks the candidate closest to its own position. The
+$d_\mathrm{cov} > r_\mathrm{safe}$ inequality is deliberate: the cover point
+sits \emph{outside} the obstacle-consensus push zone, so the hider can come
+to rest on the cover point without fighting the avoidance law.
+
+A pure-flee fallback (move 1 m further from the seeker along the
+hider-to-seeker direction) is used when no obstacle is usable -- e.g.\ when
+the seeker happens to stand at an obstacle center.
+
+% ============================================================
+\section{Obstacle consensus law (\code{cf2\_consensus.py})}
+\label{sec:consensus}
+% ============================================================
+
+\subsection{Definition}
+
+Given a list of sensed obstacles, each with closest-surface distance $d_j$ and
+outward normal $\vect{n}_j$, the consensus command is
+\[
+    \vect{u} \;=\; \sum_{j \,:\, d_j < r_\mathrm{safe}} \left[
+                       k_\mathrm{obs}\,(r_\mathrm{safe} - d_j)
+                     + k_\mathrm{bar}\!\left(\frac{r_\mathrm{safe}}{\max(d_j,\varepsilon)} - 1\right)
+                   \right] \vect{n}_j.
+\]
+The function does \emph{not} saturate; saturation is the caller's
+responsibility (the hider controller applies the magnitude cap on the summed
+force, after adding the goal/separation/boundary contributions).
+
+\subsection{Properties}
+
+\paragraph{Asymptotic (linear term).}
+Define $e_j(\vect{p}) = \max(0, r_\mathrm{safe} - d_j(\vect{p}))$ and the
+Lyapunov candidate
+\[
+    V(\vect{p}) \;=\; \tfrac{1}{2} \sum_j e_j(\vect{p})^2.
+\]
+For static obstacles, $\nabla d_j = \vect{n}_j$ on the violating set, so the
+purely-linear closed loop $\dot{\vect{p}} = -k_\mathrm{obs}\sum_j e_j \vect{n}_j$
+satisfies $\dot{V} = -k_\mathrm{obs}\sum_j e_j^2 \le 0$, with equality only when
+all violations vanish. The drone therefore converges to the safe set $\{\vect{p}
+: d_j(\vect{p}) \ge r_\mathrm{safe}\ \forall j\}$ -- an asymptotic consensus on
+``be outside every safety bubble''.
+
+\paragraph{Bounded actuation (barrier term).}
+The linear term alone has bounded magnitude on bounded violations, so a
+strong enough goal-attraction force could overpower it close to the obstacle.
+The barrier term grows like $r_\mathrm{safe}/d_j$ as $d_j \to 0$, which
+\emph{always} dominates any bounded attraction once the drone is close enough.
+Combined with the actuator saturation in the caller, the closed-loop velocity
+is bounded everywhere while the dynamics inside $\{d_j < r_\mathrm{safe}\}$
+remain dominated by the avoidance push.
+
+\paragraph{Numerical safety.}
+The denominator uses $\max(d_j, \varepsilon)$ with
+$\varepsilon = 0.02\,r_\mathrm{safe} = 12\,\text{mm}$. In simulation a drone may
+briefly penetrate an obstacle due to the discrete integration step; this clamp
+keeps the law finite while still producing a very large push.
+
+% ============================================================
+\section{Sensing (\code{cf2\_sensing.py})}
+% ============================================================
+
+\subsection{Intent heading}
+
+The heading used both for the FoV cone and the sensing axis is the unit vector
+toward the current Lissajous target:
+\[
+    \hat{\vect{h}}(t)
+    \;=\;
+    \frac{\vect{p}_\mathrm{goal}(t) - \vect{p}(t)}{\|\vect{p}_\mathrm{goal}(t) - \vect{p}(t)\|}.
+\]
+Compared to a path-tangent heading $\dot{\vect{p}}_\mathrm{goal}/\|\dot{\vect{p}}_\mathrm{goal}\|$,
+this points where the drone wants to be rather than where the path is
+currently moving. The practical consequence: when an obstacle is between the
+drone and its waypoint, the cone is already aimed at the obstacle.
+
+\subsection{FoV-cone obstacle sensing}
+
+For each obstacle $\mathcal{B}_j$, the function \code{sense\_obstacles}:
+\begin{enumerate}[leftmargin=1.4em]
+  \item Computes the closest box point $\vect{c}_j$ to the drone (per-axis
+        clamp).
+  \item Computes the 3D distance $d_j = \|\vect{c}_j - \vect{p}\|$ and rejects
+        the obstacle if $d_j > $ \code{sensing\_radius}.
+  \item Applies the angular gate $\hat{\vect{h}} \cdot \hat{\vect{e}}_j \ge
+        \cos\theta_\mathrm{fov}$ where $\hat{\vect{e}}_j = (\vect{c}_j -
+        \vect{p})/d_j$, returning the obstacle's $\vect{n}_j = -\hat{\vect{e}}_j$
+        and $d_j$.
+\end{enumerate}
+
+A degenerate case is handled explicitly: if $d_j < 10^{-6}$ (drone is on or
+inside the obstacle) the function flags it as in-cone with $\vect{n}_j =
+-\hat{\vect{h}}$, so the downstream consensus law pushes the drone back along
+the inverse of its heading.
+
+\paragraph{Why hiders sense omnidirectionally.}
+The hider controller passes $\theta_\mathrm{fov} = \pi$ to
+\code{sense\_obstacles}, effectively disabling the angular gate. The forward
+$60^\circ$ cone is reserved for \emph{seeker detection}, not obstacle
+avoidance, since otherwise a hider would be free to enter an obstacle from a
+blind side.
+
+% ============================================================
+\section{Seeker controller (\code{rmtt\_seeker.py})}
+% ============================================================
+
+\subsection{Sweep path}
+The seeker tracks a slow Lissajous sweep:
+\[
+    \vect{p}_\mathrm{goal}^{S}(t) = \begin{pmatrix}
+        A_X^S \sin(\Omega_X t) \\
+        A_Y^S \sin(\Omega_Y t + \pi/2) \\
+        c_z^S + A_Z^S \sin(\Omega_Z t)
+    \end{pmatrix},
+\]
+with $A_X^S = 1.8$, $A_Y^S = 3.5$, $A_Z^S = 0.4$, $c_z^S = 1.0$, and angular
+frequencies $\Omega_X = 0.18$, $\Omega_Y = 0.13$, $\Omega_Z = 0.08$ rad/s
+(cycle times $\approx 35, 48, 79\,\text{s}$). The $\pi/2$ phase between $x$
+and $y$ produces a figure-of-eight footprint that sweeps both ``rooms'' of
+the arena every cycle.
+
+\subsection{Control law}
+The seeker uses the same consensus law as the hiders (with the same
+parameters $r_\mathrm{safe} = 0.6$, $k_\mathrm{obs} = 2$, $k_\mathrm{bar} =
+0.5$) plus a goal attraction $\vect{F}_\mathrm{goal}^S = k_g^S (\vect{p}_\mathrm{goal}^S -
+\vect{p})$, $k_g^S = 0.6$. Saturation is applied separately on the planar
+magnitude (at $v_{\max,xy}^S = 0.55$\,m/s) and on the vertical component (at
+$|v_z^S| \le 0.35$\,m/s).
+
+The signature \code{compute\_seeker\_cmd(robot\_no, robot\_pose,
+obstacle\_pose, obstacle\_size, clock)} deliberately does \emph{not} accept
+hider positions: structural enforcement of the rule that the seeker has no
+knowledge of where the hiders are.
+
+\subsection{Search cone and line-of-sight}
+
+The search cone has half-angle $\theta_\mathrm{seek} = 30^\circ$ and range
+$3.5$\,m -- narrower but longer than the hiders' cone. The predicate
+\code{can\_see(apex, target, heading, fov\_half, range, obstacles)} returns
+\code{True} when:
+\begin{enumerate}[leftmargin=1.4em]
+  \item The 3D distance $\|\vect{t} - \vect{a}\| \le$ range.
+  \item The cone condition holds: $(\vect{t} - \vect{a}) \cdot \hat{\vect{h}}
+        \ge \cos\theta_\mathrm{fov}\,\|\vect{t} - \vect{a}\|$.
+  \item No obstacle box intersects the line segment from apex to target.
+\end{enumerate}
+
+The occlusion test uses the standard Kay--Kajiya slab algorithm
+(\code{\_segment\_intersects\_aabb}): for each of the 3 axes, compute the
+parameter interval $[t_1, t_2]$ over which the segment lies between the slab
+faces; intersect the three intervals; the segment hits the box iff the
+intersection overlaps $[0, 1]$. Axis-parallel segments are handled with an
+explicit ``inside the slab?'' check.
+
+% ============================================================
+\section{Inter-hider communication (\code{cf2\_hider.py})}
+% ============================================================
+
+The shared state is a single module-level dict:
+\begin{lstlisting}
+_last_seen = {'position': None, 'timestamp': None}
+SEEKER_MEMORY_TTL = 8.0  # seconds
+\end{lstlisting}
+Writers (\code{report\_seeker\_sighting}) overwrite both fields atomically;
+readers (\code{get\_last\_seen}) compare \code{t - timestamp} against the TTL
+and return either the position or \code{None}. Last-write-wins is fine here
+because the question is ``what is the most recent fix on the seeker'', and
+between two sightings the older one offers no extra information.
+
+\paragraph{TTL choice.}
+$8\,\text{s}$ is comfortably longer than the time the seeker takes to cross
+the arena (roughly half of its $48\,\text{s}$ $y$-cycle, so $\approx 24$\,s
+end-to-end) but much shorter than a full sweep. Practically: the swarm stays
+in hide mode while the threat is plausibly nearby, and returns to roaming
+within $\sim$\,8\,s after the seeker has moved out of sight.
+
+\paragraph{Threading.}
+The simulator runs each controller in a \code{ThreadPoolExecutor}. Python's
+GIL plus the atomic-dict-write convention is enough here: a reader can never
+see a half-written record, only a fully old or fully new one.
+
+% ============================================================
+\section{Catch detection (\code{game\_referee.py})}
+% ============================================================
+
+The referee owns a \code{set} of caught hider IDs and a dict of catch times.
+Each frame it iterates over (flying seekers) $\times$ (flying, not-yet-caught
+hiders), calls \code{can\_see} (the same predicate the seeker would compute
+internally if it had one), and adds the hider to the caught set if visible.
+Once caught, a hider stays caught for the rest of the simulation. The
+hider controller in \code{tp\_algos.cf2\_control\_fn} reads this flag via
+\code{is\_caught(robot\_no)} and returns \code{trigger\_land = True}, which
+puts the drone into landing state.
+
+% ============================================================
+\section{Visualization (\code{sim\_viz.py})}
+% ============================================================
+
+The visualization layer adds three things on top of the simulator's basic
+markers:
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{3D FoV cones.} For each flying drone, a triangle-fan
+        polyhedron is built with apex at the drone and axis along its
+        heading. The 16-segment base disk is constructed in the plane
+        perpendicular to the heading using an orthonormal basis built from
+        an arbitrary reference vector (world-$z$, switching to world-$x$
+        when the heading is nearly vertical).
+  \item \textbf{Position trails.} Each hider keeps a bounded deque
+        (\code{TRAIL\_LEN = 80}) of recent positions, drawn as a thin green
+        line. When the hider returns to idle (after a catch landing) the
+        trail is cleared so the next takeoff starts fresh.
+  \item \textbf{HUD.} A small monospace text in the upper left shows
+        $t$, the catch count, and an \code{alert on/off} flag derived from
+        \code{get\_last\_seen(t)}.
+\end{itemize}
+The cone colour for the hiders switches from \code{limegreen} (roam) to
+\code{gold} (alert) when a fresh sighting is in shared memory, so the global
+mode is visible at a glance.
+
+% ============================================================
+\section{Simulator hooks (\code{tp\_algos.py})}
+% ============================================================
+
+The TP framework requires every controller to live in \code{tp\_algos.py} with
+a fixed signature. Per the project rules, only the body marked
+\code{TO BE MODIFIED} may be edited. The implementation there is a thin shim:
+\begin{itemize}[leftmargin=1.4em]
+  \item \code{cf2\_control\_fn}: runs the takeoff state machine for the
+        hider, queries \code{game\_referee.is\_caught} to decide whether to
+        land, and otherwise delegates to
+        \code{cf2\_milestone1.compute\_roaming\_cmd}.
+  \item \code{rmtt\_control\_fn}: delegates straight to
+        \code{rmtt\_seeker.compute\_seeker\_cmd} (deliberately \emph{not}
+        passing \code{cf2\_poses}, so the structural ``the seeker doesn't
+        know where the hiders are'' property is preserved).
+  \item \code{tb3B\_control\_fn}, \code{tb3W\_control\_fn},
+        \code{rmep\_control\_fn}: placeholder behaviour (a simple goal seek);
+        these robots are not part of the hide-and-seek game in the current
+        configuration.
+\end{itemize}
+
+The lazy-import trick (\code{if not hasattr(\dots, "\_cached"): import \dots})
+keeps the file fast to reload and avoids polluting the module's namespace
+beyond what the framework expects.
+
+% ============================================================
+\section{Simulation infrastructure (\code{standalone\_sim.py})}
+% ============================================================
+
+\subsection{World and hardware specs}
+\begin{longtable}{p{4.5cm}p{2.2cm}p{8cm}}
+\toprule
+\textbf{Constant} & \textbf{Value} & \textbf{Meaning} \\
+\midrule
+\code{dt} & 0.05 s & Simulation step. \\
+\code{X\_MIN, X\_MAX} & $\pm 2.5$ m & Arena bounds (mirrored in
+\code{cf2\_milestone1}). \\
+\code{Y\_MIN, Y\_MAX} & $\pm 4.5$ m & \\
+\code{Z\_MIN, Z\_MAX} & $0,\,3.5$ m & \\
+\code{MAX\_V\_CF2} & 0.6 m/s & 3D speed cap for hider drones. \\
+\code{MAX\_V\_RMTT} & 0.6 m/s & 3D speed cap for the seeker. \\
+\code{RAD\_CF2} & 0.05 m & CF2 safety glob is $2 \times$ this. \\
+\code{RAD\_RMTT} & 0.08 m & RMTT safety glob is $2 \times$ this. \\
+\code{CF2\_HOVER\_Z} & 1.0 m & Target hover altitude after takeoff. \\
+\code{RMTT\_HOVER\_Z} & 0.8 m & \\
+\code{TAKEOFF\_TIME} & 3.0 s & Linear takeoff over $[0, \text{HOVER\_Z}]$. \\
+\code{LANDING\_TIME} & 3.0 s & \\
+\code{DRONE\_POS\_NOISE\_STD} & 0.005 m & Per-step Gaussian noise on each axis. \\
+\bottomrule
+\end{longtable}
+
+\subsection{State machine}
+Each drone has a 4-state machine:
+\[
+    0\ \text{Idle} \;\xrightarrow{\text{trigger\_takeoff}}\;
+    1\ \text{Takeoff} \;\xrightarrow{\text{timer expired}}\;
+    2\ \text{Flying} \;\xrightarrow{\text{trigger\_land}}\;
+    3\ \text{Landing} \;\xrightarrow{\text{timer/altitude}}\; 0.
+\]
+In states 1 and 3 the altitude is driven linearly by the takeoff/landing
+timer; in state 2 the controller's $(v_x, v_y, v_z)$ are applied with the
+actuator saturation and noise step.
+
+\subsection{Async controller execution}
+The simulator runs each controller in a \code{ThreadPoolExecutor} with
+\code{max\_workers = 20}. The helper \code{get\_async\_cmd} submits a job if
+none is running for the given robot, and otherwise returns the cached last
+command. This means a controller can block (e.g.\ \code{time.sleep}) without
+stalling the simulation -- the drone simply keeps its last command. The
+trade-off is that controllers can be running on slightly stale snapshots, but
+in practice the world barely changes in one \code{dt}.
+
+\subsection{Collision detection}
+Each robot has a ``safety glob'' of radius $2 \times \text{base}$ that turns
+red on contact. Three checks per frame:
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{Boundary}: arena walls in $x, y$; ceiling at $z = Z_{\max}$
+        always; floor at $z = 0$ only for drones in the flying state.
+  \item \textbf{Obstacle}: closest-point distance against each AABB (same
+        per-axis-clamp formula as the sensing module).
+  \item \textbf{Robot-to-robot}: 3D distance against the sum of the two
+        globs' radii.
+\end{itemize}
+Warnings are rate-limited to one per (robot, kind) per second.
+
+% ============================================================
+\section{Tunables summary}
+% ============================================================
+
+\begin{longtable}{p{4.5cm}p{2.2cm}p{8cm}}
+\toprule
+\textbf{Name} & \textbf{Value} & \textbf{Where / why} \\
+\midrule
+$r_\mathrm{safe}$ & 0.6 m & Desired clearance from obstacles
+(\code{R\_SAFE} in both hider and seeker). \\
+$k_\mathrm{obs}$ & 2 (1/s) & Linear consensus gain. \\
+$k_\mathrm{bar}$ & 0.5 m/s & Barrier gain near contact. \\
+$\varepsilon$ & $0.02\,r_\mathrm{safe}$ & Numerical clamp inside the barrier. \\
+$\theta_\mathrm{fov}$ hiders & $60^\circ$ & Forward cone for seeker detection
+and visualization. \\
+sensing radius & 2.0 m & Obstacle sensing range (hider and seeker). \\
+seeker detection range & 3.0 m & Hider-side range to detect the seeker. \\
+$d_0$ (sep) & 0.9 m & Inter-hider separation influence radius. \\
+$g_\mathrm{sep}$ & 5 & Inter-hider separation gain. \\
+boundary margin & 0.6 m & Distance at which wall push turns on. \\
+$g_\mathrm{bnd}$ & 0.09 & Wall push gain. \\
+$v_\mathrm{max}^\mathrm{xy}$ hider & 0.45 m/s & Final xy saturation, $< $ MAX\_V\_CF2. \\
+$Z$ rate limit & 0.3 m & Per-call $|z_\mathrm{dist} - z|$ cap. \\
+$d_\mathrm{cov}$ & 0.8 m & Cover offset past the obstacle surface. \\
+TTL & 8 s & Lifetime of a seeker sighting in shared memory. \\
+$\theta_\mathrm{seek}$ & $30^\circ$ & Seeker FoV half-angle. \\
+seeker vision range & 3.5 m & Seeker FoV slant length. \\
+$\Omega_X^S, \Omega_Y^S, \Omega_Z^S$ & 0.18, 0.13, 0.08 rad/s & Seeker Lissajous. \\
+$A_X^S, A_Y^S, A_Z^S$ & 1.8, 3.5, 0.4 m & Seeker Lissajous. \\
+$\omega_x^{(i)}$ etc. & $0.16 + 0.018(i-1)$ rad/s & Hider Lissajous (per-drone). \\
+$A_x, A_y, A_z$ & 1.6, 3.0, 0.5 m & Hider Lissajous amplitudes. \\
+TRAIL\_LEN & 80 frames & Trail length in the visualization. \\
+\bottomrule
+\end{longtable}
+
+% ============================================================
+\section{Discussion and design choices}
+% ============================================================
+
+\paragraph{Why separate the FoV cone from the obstacle sensor.}
+The first iteration of the hider used the same $60^\circ$ cone for both
+seeker detection and obstacle avoidance. The result: the drone would happily
+back into a wall when its heading was pointing forward. Splitting the two
+(omnidirectional for obstacles, forward cone for vision) is what makes the
+hider safe in a cluttered arena while still ``looking somewhere''.
+
+\paragraph{Why a barrier on top of the linear consensus.}
+A pure linear law with the same $k_\mathrm{obs}$ would let the goal-attraction
+push the drone arbitrarily close to an obstacle if the goal is on the far
+side. The barrier term grows like $r_\mathrm{safe}/d$, so it eventually
+dominates any \emph{bounded} attraction; combined with the magnitude
+saturation at the actuator limit, this gives ``always-bounded velocity, never
+collides'' under reasonable goals.
+
+\paragraph{Why cover behind the surface, not the center.}
+For elongated obstacles, a cover point at distance $r_\mathrm{cov}$ from the
+obstacle center can still be inside the AABB. The implementation computes the
+parametric ray-AABB exit and adds the offset \emph{past} the surface; combined
+with $d_\mathrm{cov} > r_\mathrm{safe}$ this gives a cover point that sits in
+the safe set, so the hider can rest there without being pushed away.
+
+\paragraph{Why structurally hide the hider positions from the seeker.}
+The seeker controller's signature does not accept \code{cf2\_poses}, and the
+referee module is the only place that knows about both. This guarantees the
+seeker cannot ``peek'' even by accident -- any future modification to the
+seeker controller would have to explicitly change its signature, which would
+be caught in review.
+
+\paragraph{Why shared-memory comms rather than message passing.}
+The simulator already runs each controller in a thread; a single
+last-write-wins dict is the smallest faithful model of ``every hider can hear
+every other hider's report''. A more elaborate scheme (per-pair channels,
+ack/nak, etc.) would not change the closed-loop behaviour because the
+controllers only care about ``most recent fix on the seeker''.
+
+% ============================================================
+\section{Future work}
+% ============================================================
+
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{Multiple seekers and adversarial cooperation.} The
+        \code{can\_see} predicate is already multi-seeker aware (the referee
+        loops over all flying RMTTs). What is missing is a seeker
+        coordination law that splits the arena and avoids redundant sweeps.
+  \item \textbf{Bounded/asymptotic consensus toward the swarm centroid.}
+        The current inter-hider law is repulsive only. Adding a weak
+        attractive term toward the swarm centroid would produce the
+        bounded-consensus behaviour mentioned in the project brief.
+  \item \textbf{Per-hider altitude diversity.} Re-enabling the $A_z$ term in
+        the Lissajous would spread the hiders vertically, making the seeker's
+        narrow cone less effective.
+  \item \textbf{Persistent cover assignment.} The current
+        \code{seek\_cover\_target} picks the nearest cover per drone every
+        tick; under heavy cover demand two hiders may oscillate on the same
+        side of the same obstacle. A simple ``don't reconsider for $\tau$
+        seconds'' rule would prevent the chatter.
+\end{itemize}
+
+\appendix
+\section{File listing}
+
+\begin{longtable}{p{4.5cm}p{2.5cm}p{8cm}}
+\toprule
+\textbf{File} & \textbf{LoC (approx.)} & \textbf{Purpose} \\
+\midrule
+\code{cf2\_milestone1.py} & $\sim$ 200 & Main hider controller. \\
+\code{cf2\_sensing.py}    & $\sim$ 150 & FoV sensing primitives. \\
+\code{cf2\_consensus.py}  & $\sim$ 60  & Obstacle consensus law. \\
+\code{cf2\_hider.py}      & $\sim$ 130 & Inter-hider comms + cover geometry. \\
+\code{rmtt\_seeker.py}    & $\sim$ 200 & Seeker controller + \code{can\_see}. \\
+\code{game\_referee.py}   & $\sim$ 60  & Catch detection. \\
+\code{sim\_viz.py}        & $\sim$ 170 & Cones, trails, HUD. \\
+\code{tp\_algos.py}       & $\sim$ 300 & Required entry-point shim. \\
+\code{standalone\_sim.py} & $\sim$ 420 & The simulator (provided). \\
+\bottomrule
+\end{longtable}
+
+\end{document}
