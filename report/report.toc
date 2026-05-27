@@ -1,0 +1,52 @@
+\babel@toc {english}{}\relax 
+\contentsline {section}{\numberline {1}Project context and high-level architecture}{3}{section.1}%
+\contentsline {paragraph}{Rules of the game.}{3}{section*.2}%
+\contentsline {paragraph}{Module decomposition.}{3}{section*.3}%
+\contentsline {paragraph}{Data flow.}{3}{section*.4}%
+\contentsline {paragraph}{Default scenario.}{4}{section*.5}%
+\contentsline {section}{\numberline {2}Mathematical model}{4}{section.2}%
+\contentsline {subsection}{\numberline {2.1}State and kinematics}{4}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Obstacles}{4}{subsection.2.2}%
+\contentsline {section}{\numberline {3}Hider controller (\texttt {cf2\_milestone1.py})}{4}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Force composition}{4}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Lissajous roaming path}{5}{subsection.3.2}%
+\contentsline {paragraph}{Two intentionally different ``Lissajous targets''.}{6}{section*.10}%
+\contentsline {subsection}{\numberline {3.3}Mode switching: roam vs.\ hide}{6}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}Cover-seeking geometry}{6}{subsection.3.4}%
+\contentsline {section}{\numberline {4}Obstacle consensus law (\texttt {cf2\_consensus.py})}{7}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Definition}{7}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Properties}{7}{subsection.4.2}%
+\contentsline {paragraph}{Asymptotic (linear term).}{7}{section*.11}%
+\contentsline {paragraph}{Bounded actuation (barrier term).}{7}{section*.12}%
+\contentsline {paragraph}{Numerical safety.}{7}{section*.13}%
+\contentsline {section}{\numberline {5}Sensing (\texttt {cf2\_sensing.py})}{7}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Intent heading}{7}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}FoV-cone obstacle sensing}{8}{subsection.5.2}%
+\contentsline {paragraph}{Why hiders sense omnidirectionally.}{8}{section*.14}%
+\contentsline {section}{\numberline {6}Seeker controller (\texttt {rmtt\_seeker.py})}{8}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Sweep path}{8}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Control law}{8}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Search cone and line-of-sight}{8}{subsection.6.3}%
+\contentsline {section}{\numberline {7}Inter-hider communication (\texttt {cf2\_hider.py})}{9}{section.7}%
+\contentsline {paragraph}{TTL choice.}{9}{section*.15}%
+\contentsline {paragraph}{Threading.}{9}{section*.16}%
+\contentsline {section}{\numberline {8}Catch detection (\texttt {game\_referee.py})}{9}{section.8}%
+\contentsline {section}{\numberline {9}Visualization (\texttt {sim\_viz.py})}{9}{section.9}%
+\contentsline {section}{\numberline {10}Simulator hooks and controller-level separation (\texttt {tp\_algos.py})}{10}{section.10}%
+\contentsline {subsection}{\numberline {10.1}3D inter-drone repulsion}{10}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}How the helper is used}{10}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}Hider takeoff handshake}{10}{subsection.10.3}%
+\contentsline {section}{\numberline {11}Simulation infrastructure (\texttt {standalone\_sim.py})}{11}{section.11}%
+\contentsline {subsection}{\numberline {11.1}World and hardware specs}{11}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}State machine}{11}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Async controller execution}{11}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}Collision detection}{11}{subsection.11.4}%
+\contentsline {section}{\numberline {12}Tunables summary}{12}{section.12}%
+\contentsline {section}{\numberline {13}Discussion and design choices}{12}{section.13}%
+\contentsline {paragraph}{Why separate the FoV cone from the obstacle sensor.}{12}{section*.17}%
+\contentsline {paragraph}{Why a barrier on top of the linear consensus.}{13}{section*.18}%
+\contentsline {paragraph}{Why cover behind the surface, not the center.}{13}{section*.19}%
+\contentsline {paragraph}{Why hide the hider positions from the seeker controller specifically.}{13}{section*.20}%
+\contentsline {paragraph}{Why shared-memory comms rather than message passing.}{13}{section*.21}%
+\contentsline {section}{\numberline {14}Future work}{13}{section.14}%
+\contentsline {section}{\numberline {A}File listing}{14}{appendix.A}%
