@@ -42,7 +42,7 @@ _PHASE_Y = math.pi / 2.0        # quadrature with x -> figure-of-eight sweep
 # Narrower than the hiders' cone so the seeker has to actively aim, but a
 # longer range so distant hiders can still be caught from across the room.
 SEEKER_FOV_HALF_ANGLE = math.radians(30)    # narrower than hiders (which use 60 deg)
-SEEKER_VISION_RANGE = 3.5                   # m
+SEEKER_VISION_RANGE = 2.0                   # m
 
 # --- Obstacle avoidance --------------------------------------------------
 # Omnidirectional sensing (math.pi half-angle): the seeker's "proximity" sense

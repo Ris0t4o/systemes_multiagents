@@ -25,8 +25,8 @@ RMTT_pose = [[-1.5, 0.0, 0.0]]  # x, y, z
 nbCF2 = 4
 # Hiders spawn at the four corners of an inset rectangle (x = +/-1.8 m,
 
-CF2_pose = [[-1.8, -3.8, 0.0], [+1.8, -3.8, 0.0],
-            [-1.8, +3.8, 0.0], [+1.8, +3.8, 0.0]]  # x, y, z
+CF2_pose = [[-1.8, -3.8, 0.0], [0.8, -3.8, 0.0],
+            [-1.8, +2.8, 0.0], [+1.8, +3.8, 0.0]]  # x, y, z
 
 nbRMEP = 0
 RMEP_pose = [[-1.0, -1.0, 0.0]]  # x, y, theta

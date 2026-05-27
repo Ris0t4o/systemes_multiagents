@@ -63,7 +63,7 @@ _Z_RATE_LIMIT = 0.3                 # m, max |z_dist - z| returned per call (kee
 #                       on-screen cone visualization.
 #   Obstacle sensing is OMNIDIRECTIONAL (math.pi) so a hider can never enter
 #   an obstacle from a blind side (same proximity-sense pattern the seeker uses).
-FOV_HALF_ANGLE = math.radians(60)
+FOV_HALF_ANGLE = math.radians(45)
 SENSING_RADIUS = 2.0
 R_SAFE = 0.6                        # m, desired clearance to obstacle surface
 K_OBS = 2.0                         # 1/s, linear consensus gain
@@ -76,7 +76,7 @@ K_BARRIER = 0.5                     # m/s, barrier strength near contact (domina
 K_DISP = 0.4
 
 # Seeker-detection (hider looks for the seeker through its own forward cone).
-HIDER_SEEKER_DETECTION_RANGE = 3.0  # m, deliberately larger than SENSING_RADIUS
+HIDER_SEEKER_DETECTION_RANGE = 2.0  # m, deliberately larger than SENSING_RADIUS
 
 
 def _lissajous_target(robot_no, t):
