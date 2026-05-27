@@ -37,10 +37,10 @@ _R_SAFE = 0.6
 _K_OBS = 2.0
 _K_BARRIER = 0.5
 
-# Slower than hider cap so hiders can outrun once spotted.
-_VMAX_XY = 0.35
-_VMAX_Z = 0.25
-_GOAL_GAIN = 0.6
+# Cruise speeds (tuned post-voliere test).
+_VMAX_XY = 0.6
+_VMAX_Z = 0.6
+_GOAL_GAIN = 0.8
 
 
 def _seeker_target(t):

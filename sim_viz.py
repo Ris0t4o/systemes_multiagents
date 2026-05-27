@@ -7,11 +7,18 @@ import numpy as np
 from collections import deque
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-from rmtt_seeker import seeker_heading, SEEKER_FOV_HALF_ANGLE, SEEKER_VISION_RANGE
-from cf2_milestone1 import FOV_HALF_ANGLE, SENSING_RADIUS, HIDER_SEEKER_DETECTION_RANGE
-from cf2_sensing import intent_heading
-from cf2_hider import get_last_seen
-import game_referee
+try:
+    from .rmtt_seeker import seeker_heading, SEEKER_FOV_HALF_ANGLE, SEEKER_VISION_RANGE
+    from .cf2_milestone1 import FOV_HALF_ANGLE, SENSING_RADIUS, HIDER_SEEKER_DETECTION_RANGE
+    from .cf2_sensing import intent_heading
+    from .cf2_hider import get_last_seen
+    from . import game_referee
+except ImportError:
+    from rmtt_seeker import seeker_heading, SEEKER_FOV_HALF_ANGLE, SEEKER_VISION_RANGE
+    from cf2_milestone1 import FOV_HALF_ANGLE, SENSING_RADIUS, HIDER_SEEKER_DETECTION_RANGE
+    from cf2_sensing import intent_heading
+    from cf2_hider import get_last_seen
+    import game_referee
 
 
 TRAIL_LEN = 80
