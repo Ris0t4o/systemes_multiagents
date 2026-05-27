@@ -1,18 +1,6 @@
 """
-Visualization overlays for the simulation.
-
-Adds three things on top of the standalone simulator's basic markers:
-
-  - 3D FoV cones for both hiders (green / gold when alerted) and the seeker
-    (orangered), drawn each frame as a triangle-fan polyhedron.
-  - Short trailing path lines for each CF2 hider (limegreen), giving a sense
-    of the recent motion.
-  - A small text HUD showing the sim clock, catch count, and whether the
-    swarm is currently in "alert" mode (a fresh seeker sighting is in the
-    shared memory).
-
-The module keeps its own little state dict so the simulator only has to call
-init() once and update() each frame.
+Sim overlays: FoV cones, hider trails, and a small HUD.
+init() once, update() per frame.
 """
 
 import numpy as np
@@ -26,12 +14,8 @@ from cf2_hider import get_last_seen
 import game_referee
 
 
-# Length of the per-drone position trail (in frames).
 TRAIL_LEN = 80
 
-# Single module-level state -- keeps the axes handle, the cone artists, and
-# the trail buffers. Initialized by init() so the module has no implicit
-# dependency on matplotlib at import time.
 _state = {
     'ax': None,
     'nbCF2': 0,
@@ -45,21 +29,17 @@ _state = {
 
 
 def init(ax, nbCF2, nbRMTT):
-    """Wire the matplotlib axes and allocate per-drone artist slots."""
+    """Wire the axes and allocate per-drone artist slots."""
     _state['ax'] = ax
     _state['nbCF2'] = nbCF2
     _state['nbRMTT'] = nbRMTT
-    # One slot per drone for the cone artist (None until first draw).
     _state['cf2_fov_cones'] = [None] * nbCF2
-    # Bounded deque for the trail -- automatically drops the oldest sample
-    # when full, so memory stays constant.
     _state['cf2_trails'] = [deque(maxlen=TRAIL_LEN) for _ in range(nbCF2)]
     _state['cf2_trail_lines'] = [
         ax.plot([], [], [], '-', color='limegreen', alpha=0.45, linewidth=1.1)[0]
         for _ in range(nbCF2)
     ]
     _state['rmtt_fov_cones'] = [None] * nbRMTT
-    # 2D-anchored text drawn over the 3D axes (transAxes coords).
     _state['status_text'] = ax.text2D(
         0.02, 0.97, '', transform=ax.transAxes,
         fontsize=9, color=(0.25, 0.25, 0.25),
@@ -73,34 +53,26 @@ def draw_fov_cone(ax, apex, heading_xyz, half_angle, radius,
     px, py, pz = apex
     hx, hy, hz = heading_xyz
 
-    # Build an orthonormal basis (u, v) for the plane perpendicular to the
-    # heading. We start from an arbitrary reference vector that is not nearly
-    # parallel to heading -- world-z is fine unless heading is itself nearly
-    # vertical, in which case we fall back to world-x.
+    # Orthonormal basis in the plane perpendicular to heading.
+    # Reference is world-z, or world-x if heading is nearly vertical.
     if abs(hz) < 0.9:
         rx, ry, rz = 0.0, 0.0, 1.0
     else:
         rx, ry, rz = 1.0, 0.0, 0.0
-    # u = heading x reference (perpendicular to both, hence in the base plane).
     ux = hy * rz - hz * ry
     uy = hz * rx - hx * rz
     uz = hx * ry - hy * rx
     un = np.sqrt(ux * ux + uy * uy + uz * uz)
     ux, uy, uz = ux / un, uy / un, uz / un
-    # v = heading x u (completes the orthonormal basis in the base plane).
     vx = hy * uz - hz * uy
     vy = hz * ux - hx * uz
     vz = hx * uy - hy * ux
 
-    # Center of the cone base: the apex pushed `radius` along the heading.
     bcx = px + radius * hx
     bcy = py + radius * hy
     bcz = pz + radius * hz
-    # Base disk radius from half-angle and slant length: br = radius * tan(theta).
     br = radius * np.tan(half_angle)
 
-    # Sample the base circle and build a triangle fan from the apex.
-    # 16 segments is enough to look smooth and stays cheap to redraw each frame.
     n_segments = 16
     base_pts = []
     for k in range(n_segments + 1):
@@ -121,27 +93,22 @@ def draw_fov_cone(ax, apex, heading_xyz, half_angle, radius,
 
 
 def update(rmtt_poses, rmtt_states, cf2_poses, cf2_states, t):
-    """Redraw cones, trails, and the HUD for the current frame."""
+    """Redraw cones, trails, and HUD."""
     ax = _state['ax']
     if ax is None:
         return
 
-    # Global alert state: drives the colour of the hiders' cones so the viewer
-    # can see at a glance when the swarm is in "we know the seeker is around" mode.
+    # Hiders' cones turn gold when a sighting is fresh in shared memory.
     alerted = get_last_seen(t) is not None
     cone_color = 'gold' if alerted else 'limegreen'
     cone_alpha = 0.16 if alerted else 0.10
 
     for i in range(_state['nbCF2']):
-        # Each frame, throw away the previous cone artist and rebuild -- this
-        # is simpler than mutating the Poly3DCollection in place, and the cost
-        # is negligible for tens of drones.
+        # Throw away and rebuild — cheap for this many drones.
         if _state['cf2_fov_cones'][i] is not None:
             _state['cf2_fov_cones'][i].remove()
             _state['cf2_fov_cones'][i] = None
         if cf2_states[i] == 2 and not game_referee.is_caught(i + 1):
-            # Cone axis = intent_heading, so visualization matches what the
-            # controller is actually pointing at.
             heading = intent_heading(i + 1, cf2_poses[:, i], t)
             _state['cf2_fov_cones'][i] = draw_fov_cone(
                 ax,
@@ -153,10 +120,7 @@ def update(rmtt_poses, rmtt_states, cf2_poses, cf2_states, t):
                 (cf2_poses[0, i], cf2_poses[1, i], cf2_poses[2, i])
             )
         elif cf2_states[i] == 0:
-            # Reset trail when a drone returns to Idle (e.g. after landing
-            # from a catch) so the next take-off starts with a clean line.
             _state['cf2_trails'][i].clear()
-        # Push the trail data into the matplotlib line for this drone.
         if len(_state['cf2_trails'][i]) >= 2:
             xs, ys, zs = zip(*_state['cf2_trails'][i])
             _state['cf2_trail_lines'][i].set_data(xs, ys)
@@ -166,7 +130,6 @@ def update(rmtt_poses, rmtt_states, cf2_poses, cf2_states, t):
             _state['cf2_trail_lines'][i].set_3d_properties([])
 
     for i in range(_state['nbRMTT']):
-        # Same throw-away-and-rebuild pattern for the seeker cone.
         if _state['rmtt_fov_cones'][i] is not None:
             _state['rmtt_fov_cones'][i].remove()
             _state['rmtt_fov_cones'][i] = None
@@ -179,7 +142,6 @@ def update(rmtt_poses, rmtt_states, cf2_poses, cf2_states, t):
                 color='orangered', alpha=0.16,
             )
 
-    # HUD: clock, catch count, alert flag.
     alert_str = "on " if alerted else "off"
     _state['status_text'].set_text(
         f"t = {t:6.1f} s   caught = {game_referee.catch_count()}/{_state['nbCF2']}   alert = {alert_str}"
