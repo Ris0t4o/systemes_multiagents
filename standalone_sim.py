@@ -30,7 +30,7 @@ RMEP_pose = [[-1.0, -1.0, 0.0]]  # x, y, theta
 
 nbObstacle = 2
 obstacle_size = [[1.0, 0.5, 2.5], [0.5, 1.1, 2.5]]
-obstacle_pose = [[0.0, 0.0, 0.0], [3.0, -3.0, 0.0]]
+obstacle_pose = [[-0.5, 1.5, 0.0], [0.8, -2.0, 0.0]]
 
 # ==========================================
 # 2. HARDWARE SPECS (SPEEDS, RADII, TIMERS)

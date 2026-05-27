@@ -1,6 +1,6 @@
-PWD c:\Users\hp\Desktop\systemes_multiagents\report
+PWD C:\Users\hp\Desktop\systemes_multiagents\report
 INPUT C:\Users\hp\AppData\Local\MiKTeX\miktex\data\le\pdftex\pdflatex.fmt
-INPUT c:\Users\hp\Desktop\systemes_multiagents\report\report.tex
+INPUT report.tex
 OUTPUT report.log
 INPUT C:\Program Files\MiKTeX\tex\latex\base\article.cls
 INPUT C:\Program Files\MiKTeX\tex\latex\base\article.cls

@@ -156,10 +156,15 @@ At each tick $t = k\,\Delta t$ ($\Delta t = 0.05\,\text{s}$), the simulator:
 \paragraph{Default scenario.}
 The simulator ships with \code{nbRMTT = 1} seeker, \code{nbCF2 = 1} hider
 (scalable up to 3 in the TP framework), and \code{nbObstacle = 2}: a $1.0
-\times 0.5 \times 2.5$\,m pillar at the origin and a $0.5 \times 1.1 \times
-2.5$\,m pillar at $(3, -3, 0)$. The RMTT starts at $(-1, 1, 0)$ and is forced
-into takeoff at $t = 0$; the CF2 starts at $(-1, 0, 0)$ and only takes off
-once its controller requests it.
+\times 0.5 \times 2.5$\,m pillar at $(-0.5, 1.5, 0)$ and a $0.5 \times 1.1
+\times 2.5$\,m pillar at $(0.8, -2.0, 0)$. The two pillars sit in opposing
+``rooms'' of the arena (positive vs.\ negative $y$), keep at least
+$1.4$\,m of clearance from every wall (well above $r_\mathrm{safe} = 0.6$\,m),
+and are $\sim 3.7$\,m apart center-to-center -- enough that the cover-seeking
+hider has a real choice of which side to flee toward, while the seeker's
+$y$-dominant Lissajous sweeps both rooms on every cycle. The RMTT starts at
+$(-1, 1, 0)$ and is forced into takeoff at $t = 0$; the CF2 starts at
+$(-1, 0, 0)$ and only takes off once its controller requests it.
 
 % ============================================================
 \section{Mathematical model}
