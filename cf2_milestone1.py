@@ -243,10 +243,11 @@ def compute_roaming_cmd(robot_no, robot_pose, cf2_poses, rmtt_poses, obstacle_po
     if up < boundary_margin:
         fy -= boundary_gain * (1.0 / max(up, 1e-4) - 1.0 / boundary_margin)
 
-    # Saturate the final (vx, vy) by magnitude. 0.45 m/s leaves headroom under
-    # MAX_V_CF2 = 0.6 so the z component can move without the 3D clamp in the
-    # simulator scaling down the xy avoidance.
-    vx, vy = _saturate_xy(fx, fy, vmax=0.45)
+    # Saturate the final (vx, vy) by magnitude. 0.55 m/s sits just under
+    # MAX_V_CF2 = 0.6 and -- critically -- above the seeker's cruise cap of
+    # 0.35, so hiders can outrun the seeker once a sighting has triggered
+    # hide mode.
+    vx, vy = _saturate_xy(fx, fy, vmax=0.55)
 
     # Rate-limit z command so |vz| stays small enough that the sim's 3D speed cap
     # (clamp_vel3d at MAX_V_CF2=0.6) doesn't scale down the xy avoidance.
