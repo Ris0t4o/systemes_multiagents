@@ -22,8 +22,8 @@ nbRMTT = 1
 # Started at z=0.0 so we can see the 3s straight line takeoff
 RMTT_pose = [[-1.0, 1.0, 0.0]]  # x, y, z 
 
-nbCF2 = 1
-CF2_pose = [[-1.0, 0.0, 0.0]]  # x, y, z
+nbCF2 = 4
+CF2_pose = [[-1.0, 0.0, 0.0], [-0.5, 0.5, 0.0], [0.0, 1.0, 0.0], [0.5, 0.5, 0.0]]  # x, y, z
 
 nbRMEP = 0
 RMEP_pose = [[-1.0, -1.0, 0.0]]  # x, y, theta
