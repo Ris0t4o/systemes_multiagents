@@ -26,9 +26,9 @@ _OMEGA_Y = 0.13                 # ~48 s
 _OMEGA_Z = 0.08                 # ~79 s
 _PHASE_Y = math.pi / 2.0
 
-# Vision cone (narrow + long range). Exposed for the sim/referee.
+# Narrow vision cone. Exposed for the sim/referee.
 SEEKER_FOV_HALF_ANGLE = math.radians(30)
-SEEKER_VISION_RANGE = 3.5
+SEEKER_VISION_RANGE = 2.0
 
 # Omnidirectional proximity sensing — separate from vision.
 _OBS_SENSING_RADIUS = 2.0

@@ -8,7 +8,7 @@ from collections import deque
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from rmtt_seeker import seeker_heading, SEEKER_FOV_HALF_ANGLE, SEEKER_VISION_RANGE
-from cf2_milestone1 import FOV_HALF_ANGLE, SENSING_RADIUS
+from cf2_milestone1 import FOV_HALF_ANGLE, SENSING_RADIUS, HIDER_SEEKER_DETECTION_RANGE
 from cf2_sensing import intent_heading
 from cf2_hider import get_last_seen
 import game_referee
@@ -113,7 +113,7 @@ def update(rmtt_poses, rmtt_states, cf2_poses, cf2_states, t):
             _state['cf2_fov_cones'][i] = draw_fov_cone(
                 ax,
                 (cf2_poses[0, i], cf2_poses[1, i], cf2_poses[2, i]),
-                heading, FOV_HALF_ANGLE, SENSING_RADIUS,
+                heading, FOV_HALF_ANGLE, HIDER_SEEKER_DETECTION_RANGE,
                 color=cone_color, alpha=cone_alpha,
             )
             _state['cf2_trails'][i].append(

@@ -41,7 +41,7 @@ _Z_RATE_LIMIT = 0.3                 # m/call cap on z change, keeps xy saturatio
 
 # Forward cone used for seeker detection and visualization only.
 # Obstacle sensing is omnidirectional (math.pi).
-FOV_HALF_ANGLE = math.radians(60)
+FOV_HALF_ANGLE = math.radians(45)
 SENSING_RADIUS = 2.0
 R_SAFE = 0.6
 K_OBS = 2.0
@@ -50,7 +50,7 @@ K_BARRIER = 0.5
 # Coulomb-style dispersion gain, comparable to goal_gain.
 K_DISP = 0.4
 
-HIDER_SEEKER_DETECTION_RANGE = 3.0
+HIDER_SEEKER_DETECTION_RANGE = 2.0
 
 
 def _lissajous_target(robot_no, t):
