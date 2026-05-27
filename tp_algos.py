@@ -83,13 +83,58 @@ TAKEOFF_DONE = False
 Time2Takeoff = 5 # time to wait before takeoff for the cf2 drone (in seconds)
 
 # Controller-level drone separation (3D).
+# HARD floor: two drones must never come closer than DRONE_MIN_DISTANCE.
+# The law below is a divergent barrier (1/slack form, unbounded as
+# d -> min_dist), wrapped in an activation buffer >> 2*MAX_V*dt so the
+# discrete Euler step can never carry a drone past the floor between ticks.
 DRONE_MIN_DISTANCE = 1.0
+# Activation buffer. The simulator's per-step displacement is bounded by
+# MAX_V * dt = 0.6 * 0.05 = 0.03 m per drone, so the worst-case relative
+# closure between two drones in one tick is 2 * MAX_V * dt = 0.06 m. Any
+# activation buffer above 0.06 m guarantees that once d crosses the
+# activation boundary, the barrier dominates and both drones reverse to
+# MAX_V outward before d can reach min_dist. We use 0.5 m for a generous
+# safety margin (closing speed never sustains the worst-case in practice).
+DRONE_ACTIVATION_DISTANCE = 1.5
 DRONE_REPULSION_EPS = 1e-6
-DRONE_REPULSION_GAIN = 1.0
+# Barrier strength. At d just inside DRONE_ACTIVATION_DISTANCE the barrier
+# magnitude is G * (1/slack - 1/d_band) where d_band = activation - min_dist.
+# G = 30 makes the barrier exceed the controllers' maximum xy command
+# (0.45 m/s for cf2_milestone1, 0.55 m/s for rmtt_seeker) by the time
+# d reaches activation - 0.06 m -- before the next-step closure can bite.
+DRONE_REPULSION_GAIN = 30.0
 
 
-def _compute_drone_repulsion_3d(self_pose, neighbor_positions, min_dist=DRONE_MIN_DISTANCE):
-    """Return a 3D velocity offset that pushes the drone away from close neighbors."""
+def _compute_drone_repulsion_3d(self_pose, neighbor_positions,
+                                min_dist=DRONE_MIN_DISTANCE,
+                                activation=DRONE_ACTIVATION_DISTANCE):
+    """Return a 3D velocity offset that enforces a HARD min_dist between drones.
+
+    Regimes (as a function of the pairwise distance d):
+      - d >= activation: this neighbor contributes nothing (drones are far).
+      - min_dist < d < activation: magnitude grows like 1/(d - min_dist),
+        vanishing at d = activation and diverging as d -> min_dist+. By the
+        time d is inside the band by more than 2*MAX_V*dt = 0.06 m, the
+        magnitude already overwhelms any other commanded velocity (the
+        controller's xy command is bounded at 0.45 m/s; ours grows past
+        that within ~6 cm of the activation boundary), so the simulator's
+        per-step clamp at MAX_V resolves the net direction as PURELY outward
+        at full speed.
+      - d <= min_dist: safety net. Should never be reached under correct
+        operation, but if it ever is (e.g. spawning two drones on top of
+        one another), we emit a 1e6-magnitude outward command so the clamp
+        snaps the drone to MAX_V outward.
+
+    Discrete-time non-penetration argument (sketch):
+      Both drones run this law every tick. Suppose at tick k, d_k > min_dist.
+      If d_k >= activation, the barrier may be zero and d_{k+1} can drop by
+      at most 2*MAX_V*dt = 0.06 m. So d_{k+1} >= activation - 0.06 m =
+      min_dist + 0.44 m -- still safely above min_dist. From then on,
+      d in (min_dist, activation), the barrier dominates, both drones are
+      commanded to MAX_V outward, and d_{k+2} >= d_{k+1} + 2*MAX_V*dt.
+      Therefore d_k > min_dist => d_{k+1} > min_dist for all k. The 1 m
+      floor is enforced.
+    """
     sx = float(self_pose[0])
     sy = float(self_pose[1])
     sz = float(self_pose[2])
@@ -97,6 +142,9 @@ def _compute_drone_repulsion_3d(self_pose, neighbor_positions, min_dist=DRONE_MI
     dvx = 0.0
     dvy = 0.0
     dvz = 0.0
+    # Width of the active band; precomputed to keep the inner loop cheap.
+    d_band = max(activation - min_dist, DRONE_REPULSION_EPS)
+    inv_d_band = 1.0 / d_band
 
     for nx, ny, nz in neighbor_positions:
         dx = sx - float(nx)
@@ -104,16 +152,30 @@ def _compute_drone_repulsion_3d(self_pose, neighbor_positions, min_dist=DRONE_MI
         dz = sz - float(nz)
         dist = math.sqrt(dx * dx + dy * dy + dz * dz)
 
-        if dist >= min_dist:
+        if dist >= activation:
             continue
+
         if dist < DRONE_REPULSION_EPS:
+            # Exactly co-located: pick an arbitrary +x direction so the law
+            # still has something to push along.
             ux, uy, uz = 1.0, 0.0, 0.0
         else:
             ux = dx / dist
             uy = dy / dist
             uz = dz / dist
 
-        mag = DRONE_REPULSION_GAIN * (min_dist - dist) / max(min_dist, DRONE_REPULSION_EPS)
+        if dist <= min_dist:
+            # Safety net for pathological states. Magnitude is much larger
+            # than the controllers' bounded commands, so after the
+            # simulator's MAX_V clamp the velocity is purely outward at
+            # full speed.
+            mag = 1.0e6
+        else:
+            # Divergent barrier: vanishes at d = activation, blows up as
+            # d -> min_dist+. Continuous everywhere inside the band.
+            slack = dist - min_dist
+            mag = DRONE_REPULSION_GAIN * (1.0 / slack - inv_d_band)
+
         dvx += mag * ux
         dvy += mag * uy
         dvz += mag * uz

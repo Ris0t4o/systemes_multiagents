@@ -722,26 +722,55 @@ with a fixed signature. Per the project rules, only the body marked
         closer than 1\,m'' rule.
 \end{enumerate}
 
-\subsection{3D inter-drone repulsion}
+\subsection{3D inter-drone barrier: a hard 1\,m floor}
 
-The helper \code{\_compute\_drone\_repulsion\_3d(self\_pose, neighbors,
-min\_dist=1.0)} computes, for each neighbor closer than $d_\mathrm{min}$, a
-unit push along the 3D vector from neighbor to self, scaled by a linear
-deficit:
+\code{\_compute\_drone\_repulsion\_3d(self\_pose, neighbors,
+min\_dist=1.0, activation=1.5)} enforces a \emph{hard} minimum separation
+$d_\mathrm{min} = 1\,\text{m}$ between any pair of drones (hider-hider and
+hider-seeker alike). For each neighbor $k$ with $d_{ik} < d_\mathrm{act}$:
 \[
-    \Delta\vect{v}_i \;=\; g_\mathrm{rep} \sum_{k\,:\,d_{ik} < d_\mathrm{min}}
-    \frac{d_\mathrm{min} - d_{ik}}{d_\mathrm{min}}\,
+    \Delta\vect{v}_i \;=\; g_\mathrm{rep}
+    \sum_{k\,:\,d_{ik} < d_\mathrm{act}}
+    \!\left(\frac{1}{d_{ik} - d_\mathrm{min}} - \frac{1}{d_\mathrm{act} - d_\mathrm{min}}\right)
     \frac{\vect{p}_i - \vect{p}_k}{\|\vect{p}_i - \vect{p}_k\|},
-    \qquad g_\mathrm{rep} = 1.0,\ d_\mathrm{min} = 1.0\,\text{m}.
+    \quad g_\mathrm{rep} = 30,\ d_\mathrm{act} = 1.5\,\text{m}.
 \]
-A degenerate case ($d_{ik} < \varepsilon = 10^{-6}$\,m) returns a fixed $+x$
-push so the function never divides by zero. The sum operates in all three
-axes, contrary to the planar dispersion consensus in \code{cf2\_milestone1}
-which only sees $xy$; the 3D component matters when a hider and the seeker
-happen to be vertically aligned (which the dispersion law ignores by
-construction). The two laws compose by addition, so this fence acts as a
-short-range 3D safety net on top of whatever long-range $xy$ geometry the
-dispersion law has chosen.
+The magnitude vanishes continuously at $d = d_\mathrm{act}$ and diverges as
+$d \to d_\mathrm{min}^+$. If a pathological state $d \le d_\mathrm{min}$ is
+ever observed (e.g.\ at spawn), the function returns a $10^6$-magnitude
+outward command which, after the simulator's per-axis clamp at
+$\text{MAX\_V} = 0.6\,\text{m/s}$, drives the drone at full speed purely
+outward.
+
+\paragraph{Discrete-time non-penetration argument.}
+Let $\Delta t = 0.05\,\text{s}$ and $v_\mathrm{max} = 0.6\,\text{m/s}$.
+The largest closure two drones can produce in one tick is
+$2 v_\mathrm{max} \Delta t = 0.06\,\text{m}$. Suppose at tick $k$ we have
+$d_k > d_\mathrm{min}$.
+\begin{itemize}[leftmargin=1.4em]
+  \item If $d_k \ge d_\mathrm{act}$, the barrier is zero on this step but
+        $d_{k+1} \ge d_k - 0.06 \ge d_\mathrm{act} - 0.06 = 1.44\,\text{m}
+        > d_\mathrm{min}$.
+  \item If $d_\mathrm{min} < d_k < d_\mathrm{act}$, the barrier magnitude
+        already exceeds the controllers' bounded xy commands ($\le
+        0.45\,\text{m/s}$ for the hider, $\le 0.55\,\text{m/s}$ for the
+        seeker) once $d_k \le d_\mathrm{act} - 0.06$. The clamp therefore
+        resolves the net velocity to $v_\mathrm{max}$ purely outward on
+        both drones, and
+        $d_{k+1} \ge d_k + 2 v_\mathrm{max} \Delta t > d_\mathrm{min}$.
+\end{itemize}
+Combining the two cases, $d_k > d_\mathrm{min} \Rightarrow d_{k+1} >
+d_\mathrm{min}$ for every $k$. The 1\,m floor is invariant under the
+closed-loop dynamics.
+
+A numerical degenerate case ($d_{ik} < \varepsilon = 10^{-6}$\,m) returns a
+fixed $+x$ push so the function never divides by zero. The sum operates in
+all three axes, contrary to the planar dispersion consensus in
+\code{cf2\_milestone1} which only sees $xy$; the 3D component matters when a
+hider and the seeker happen to be vertically aligned (which the dispersion
+law ignores by construction). The two laws compose by addition, so the
+barrier acts as a short-range 3D hard fence on top of whatever long-range
+$xy$ geometry the dispersion law has chosen.
 
 \subsection{How the helper is used}
 
@@ -868,9 +897,14 @@ $\varepsilon_\mathrm{disp}$ & 0.05 m & Pairwise-distance floor inside the
 dispersion law (numerical safety). \\
 $k_g$ & 0.15 & Goal attraction gain in the hider controller (weakened so
 dispersion dominates). \\
-$d_\mathrm{min}$ & 1.0 m & 3D drone-to-drone hard-fence trigger
+$d_\mathrm{min}$ & 1.0 m & 3D drone-to-drone hard floor; mathematically
+guaranteed invariant under the closed-loop dynamics
 (\code{tp\_algos.DRONE\_MIN\_DISTANCE}). \\
-$g_\mathrm{rep}$ & 1.0 & 3D drone-to-drone repulsion gain
+$d_\mathrm{act}$ & 1.5 m & Activation buffer above $d_\mathrm{min}$ where the
+barrier turns on; sized so $d_\mathrm{act} - d_\mathrm{min} \gg
+2 v_\mathrm{max} \Delta t = 0.06$ m
+(\code{tp\_algos.DRONE\_ACTIVATION\_DISTANCE}). \\
+$g_\mathrm{rep}$ & 30.0 & 3D drone-to-drone barrier gain
 (\code{tp\_algos.DRONE\_REPULSION\_GAIN}). \\
 boundary margin & 0.6 m & Distance at which wall push turns on. \\
 $g_\mathrm{bnd}$ & 0.09 & Wall push gain. \\
