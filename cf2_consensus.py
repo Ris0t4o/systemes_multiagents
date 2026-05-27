@@ -1,7 +1,7 @@
 """
 Obstacle consensus law shared by hiders (CF2) and the seeker (RMTT).
 
-This module is intentionally tiny: it implements a single control primitive --
+This module implements a single control primitive --
 "how strongly should I be pushed away from the obstacles I currently sense" --
 in a way that is both *asymptotically* safe (a Lyapunov-decreasing linear term)
 and *bounded* near contact (an unbounded barrier term that overpowers any

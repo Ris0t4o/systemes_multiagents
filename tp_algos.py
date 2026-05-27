@@ -193,7 +193,7 @@ def rmtt_control_fn(robotNo, robotPose, tb3B_poses, tb3W_poses, rmtt_poses, cf2_
     
     #  --- TO BE MODIFIED ---
     # Seeker controller. Deliberately does NOT receive hider positions (cf2_poses)
-    # so "the seeker doesn't know where the hiders are" is enforced structurally.
+    # so the seeker doesn't know where the hiders are.
     if not hasattr(rmtt_control_fn, "_seeker_cmd_fn"):
         try:
             from .rmtt_seeker import compute_seeker_cmd
@@ -201,22 +201,34 @@ def rmtt_control_fn(robotNo, robotPose, tb3B_poses, tb3W_poses, rmtt_poses, cf2_
             # For standalone testing of this module, allow importing from the same directory.
             from rmtt_seeker import compute_seeker_cmd
         rmtt_control_fn._seeker_cmd_fn = compute_seeker_cmd
-
-    vx, vy, vz, led = rmtt_control_fn._seeker_cmd_fn(
-        robotNo, robotPose, obstacle_pose, obstacle_size, clock
-    )
-
-    # Bidirectional seeker-hider separation in 3D with a hard trigger at 1.0 m.
-    cf2_neighbors = [
-        (cf2_poses[0, j], cf2_poses[1, j], cf2_poses[2, j])
-        for j in range(nbCF2)
-    ]
-    dvx, dvy, dvz = _compute_drone_repulsion_3d(robotPose, cf2_neighbors)
-    vx += dvx
-    vy += dvy
-    vz += dvz
+    if not hasattr(rmtt_control_fn, "_catch_count_fn"):
+        try:
+            from .game_referee import catch_count
+        except ImportError:
+            from game_referee import catch_count
+        rmtt_control_fn._catch_count_fn = catch_count
 
     trigger_land = False
+
+    if nbCF2 > 0 and rmtt_control_fn._catch_count_fn() >= nbCF2:
+        # All hiders caught -- game over, seeker lands.
+        vx, vy, vz = 0.0, 0.0, 0.0
+        led = (0, 255, 0)
+        trigger_land = True
+    else:
+        vx, vy, vz, led = rmtt_control_fn._seeker_cmd_fn(
+            robotNo, robotPose, obstacle_pose, obstacle_size, clock
+        )
+
+        # Bidirectional seeker-hider separation in 3D with a hard trigger at 1.0 m.
+        cf2_neighbors = [
+            (cf2_poses[0, j], cf2_poses[1, j], cf2_poses[2, j])
+            for j in range(nbCF2)
+        ]
+        dvx, dvy, dvz = _compute_drone_repulsion_3d(robotPose, cf2_neighbors)
+        vx += dvx
+        vy += dvy
+        vz += dvz
     # -----------------------
 
     return vx,vy,vz,trigger_land,led
