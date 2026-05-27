@@ -1,16 +1,17 @@
 """
-Obstacle consensus law shared by hiders (CF2) and the seeker (RMTT).
+Consensus laws used by the CF2 hider swarm.
 
-This module implements a single control primitive --
-"how strongly should I be pushed away from the obstacles I currently sense" --
-in a way that is both *asymptotically* safe (a Lyapunov-decreasing linear term)
-and *bounded* near contact (an unbounded barrier term that overpowers any
-bounded goal-attraction once we are too close).
+Two primitives live here:
 
-The caller is responsible for:
-  - producing the `sensed_obstacles` list (see cf2_sensing.sense_obstacles),
-  - choosing R_SAFE, K_OBS, K_BARRIER,
-  - saturating the resulting (fx, fy) at an actuator limit.
+  - `obstacle_consensus_cmd`: per-agent, Lyapunov-decreasing + barrier push away
+    from sensed obstacles. Used by both hiders and the seeker.
+  - `inter_agent_dispersion_cmd`: per-agent gradient of the swarm-level
+    dispersion potential V = (k/2) * sum_{i != j} 1 / ||p_i - p_j|| (Coulomb
+    form). Drives the hider swarm toward a maximally-dispersed configuration
+    so the seeker cannot catch everyone in one FoV sweep.
+
+Both functions return a 2D (fx, fy) force; the caller composes them with the
+goal attraction and the actuator saturation.
 """
 
 import math
@@ -70,4 +71,52 @@ def obstacle_consensus_cmd(sensed_obstacles, r_safe, k_obs, k_barrier=0.0):
         # direction we want to be pushed.
         fx += mag * nx
         fy += mag * ny
+    return fx, fy
+
+
+def inter_agent_dispersion_cmd(self_xy, neighbor_xy, k_disp, eps=0.05):
+    """
+    Per-agent dispersion law: gradient of the swarm potential
+        V_disp(p_1, ..., p_N) = (k/2) * sum_{i != j} 1 / ||p_i - p_j||
+    evaluated at this agent's position. Returns u_i = -grad_i V_disp =
+        k * sum_{j != i} (p_i - p_j) / ||p_i - p_j||^3
+
+    Properties (this is exactly what makes it "real" consensus, not the
+    short-range repulsion it replaces):
+      - Aggregate Lyapunov: V_disp is the same scalar function that every
+        agent's law decreases along the joint gradient flow. The swarm
+        therefore minimizes V_disp -- equivalently maximizes pairwise
+        distances -- combined with whatever boundary/obstacle constraints
+        the caller adds.
+      - Long-range: no cutoff. Every other hider contributes at every
+        distance, so the swarm always knows about its full geometry, not
+        just the neighbors within 0.9 m.
+      - Symmetric and Newton's-third-law-like: agent i pushes j by the same
+        magnitude that j pushes i, so the centroid of the swarm is invariant
+        under this law alone (the boundary/goal terms then steer the centroid).
+
+    `eps` floors the pairwise distance to avoid a numerical blow-up if two
+    drones briefly co-locate. 0.05 m is half the CF2 glob radius.
+
+    Caller responsibility: saturate the final (fx, fy) at an actuator limit.
+    """
+    sx = float(self_xy[0])
+    sy = float(self_xy[1])
+
+    fx = 0.0
+    fy = 0.0
+    eps2 = eps * eps
+    for nx, ny in neighbor_xy:
+        dx = sx - float(nx)
+        dy = sy - float(ny)
+        # Squared distance with eps floor: keeps d^3 well above zero so the
+        # gradient stays bounded even if two hiders briefly overlap.
+        d2 = dx * dx + dy * dy
+        if d2 < eps2:
+            d2 = eps2
+        d = math.sqrt(d2)
+        # u_i contribution from this neighbor: k * (p_i - p_j) / d^3.
+        inv_d3 = 1.0 / (d * d2)
+        fx += k_disp * dx * inv_d3
+        fy += k_disp * dy * inv_d3
     return fx, fy

@@ -29,7 +29,7 @@ _last_seen = {
 # seeker takes to cross the arena (~30s for a half cycle of its Lissajous), so
 # the swarm stays in hide mode while the threat is plausibly nearby, but short
 # enough that they return to free roaming once it has clearly moved on.
-SEEKER_MEMORY_TTL = 8.0   # seconds
+SEEKER_MEMORY_TTL = 5.0   # seconds
 
 
 def report_seeker_sighting(seeker_pos, timestamp):
@@ -140,3 +140,147 @@ def seek_cover_target(robot_pose, seeker_pos, obstacle_pose, obstacle_size):
         # Hider exactly at seeker -- arbitrary +x flee.
         return (px + 1.0, py, pz)
     return (px + dx / norm, py + dy / norm, pz)
+
+
+# --- Multi-agent cover assignment ---------------------------------------
+# Generate cover candidates per AABB face (4 faces per obstacle in 2D), keep
+# only the faces that are on the FAR side of the obstacle relative to the
+# seeker -- those are the ones that actually occlude line of sight.
+_AABB_FACE_NORMALS = ((+1.0, 0.0), (-1.0, 0.0), (0.0, +1.0), (0.0, -1.0))
+
+
+def _enumerate_cover_candidates(seeker_pos, obstacle_pose, obstacle_size):
+    """Build the list of xy cover points that sit COVER_OFFSET behind one
+    AABB face of one obstacle. Same geometry as `seek_cover_target`, but
+    one point per face rather than one per obstacle, so multiple hiders can
+    occupy distinct cover points around the same obstacle."""
+    sx = float(seeker_pos[0])
+    sy = float(seeker_pos[1])
+
+    n_obstacles = obstacle_pose.shape[1] if obstacle_pose.size else 0
+    candidates = []
+    for i in range(n_obstacles):
+        ox = float(obstacle_pose[0, i])
+        oy = float(obstacle_pose[1, i])
+        half_x = float(obstacle_size[0, i]) * 0.5
+        half_y = float(obstacle_size[1, i]) * 0.5
+        # Seeker -> obstacle direction. Faces with normal . this_direction > 0
+        # are on the far side and provide real occlusion.
+        dox = ox - sx
+        doy = oy - sy
+        for nx, ny in _AABB_FACE_NORMALS:
+            if nx * dox + ny * doy <= 0.0:
+                continue
+            # Cover point: face center pushed COVER_OFFSET along the outward
+            # normal. Face center is the obstacle center shifted by half the
+            # box side along the face's axis.
+            face_cx = ox + nx * half_x
+            face_cy = oy + ny * half_y
+            cx = face_cx + nx * COVER_OFFSET
+            cy = face_cy + ny * COVER_OFFSET
+            candidates.append((cx, cy))
+    return candidates
+
+
+def _best_assignment(cost_matrix):
+    """Brute-force optimal injective assignment of N rows (hiders) to M
+    columns (candidates), with N <= M. Returns a list `assign` of length N
+    where `assign[i]` is the column index chosen for row i, minimizing the
+    sum of cost_matrix[i, assign[i]].
+
+    With N <= 4 and M <= 8 the search space is at most 8*7*6*5 = 1680
+    permutations -- negligible. Avoids a SciPy dependency."""
+    n = len(cost_matrix)
+    if n == 0:
+        return []
+    m = len(cost_matrix[0])
+    best_total = float('inf')
+    best_assign = None
+
+    chosen = [-1] * n
+    used = [False] * m
+
+    def recurse(row, total):
+        nonlocal best_total, best_assign
+        if total >= best_total:
+            # Lower-bound prune: cannot improve.
+            return
+        if row == n:
+            best_total = total
+            best_assign = chosen.copy()
+            return
+        for col in range(m):
+            if used[col]:
+                continue
+            used[col] = True
+            chosen[row] = col
+            recurse(row + 1, total + cost_matrix[row][col])
+            used[col] = False
+
+    recurse(0, 0.0)
+    return best_assign if best_assign is not None else list(range(n))
+
+
+def assign_cover_targets(cf2_xy, seeker_pos, obstacle_pose, obstacle_size):
+    """
+    Decentralized multi-agent cover assignment.
+
+    Every hider runs this same deterministic function on identical inputs
+    (the shared seeker sighting plus the simulator-provided pose matrix),
+    so they reach the same global assignment without exchanging messages.
+    This is the "every node solves the same optimization" flavor of
+    consensus -- a one-shot agreement on which cover belongs to whom.
+
+    Algorithm:
+      1. Enumerate candidate cover points: one per AABB face that lies on
+         the far side of an obstacle relative to the seeker.
+      2. Build a cost matrix C[i, j] = squared xy distance from hider i to
+         candidate j.
+      3. Solve min-cost injective assignment via brute force.
+      4. If there are fewer candidates than hiders, fill the rest with a
+         pure-flee fallback fanned out by 2*pi/N around the seeker so they
+         don't pile up on the same line.
+
+    Returns a list of (cx, cy) tuples, one per hider, indexed by robot_no-1.
+    """
+    n_hiders = len(cf2_xy)
+    candidates = _enumerate_cover_candidates(seeker_pos, obstacle_pose, obstacle_size)
+    sx = float(seeker_pos[0])
+    sy = float(seeker_pos[1])
+
+    targets = [None] * n_hiders
+
+    if candidates and n_hiders > 0:
+        m = len(candidates)
+        # If we have more hiders than far-side cover faces, only the first
+        # min(n, m) hiders get a real cover point; the rest fall back below.
+        n_assigned = min(n_hiders, m)
+        cost = [
+            [
+                (float(cf2_xy[i][0]) - candidates[j][0]) ** 2
+                + (float(cf2_xy[i][1]) - candidates[j][1]) ** 2
+                for j in range(m)
+            ]
+            for i in range(n_assigned)
+        ]
+        assignment = _best_assignment(cost)
+        for i in range(n_assigned):
+            targets[i] = candidates[assignment[i]]
+
+    # Fallback for any hider that didn't get a real cover candidate: stand
+    # 1.5 m from the seeker on an angular offset, so they spread radially
+    # around the seeker instead of stacking up on one ray.
+    fallback_radius = 1.5
+    fallback_count = sum(1 for t in targets if t is None)
+    fallback_idx = 0
+    for i in range(n_hiders):
+        if targets[i] is not None:
+            continue
+        # Angle is per-hider so the fan is stable across frames.
+        angle = (2.0 * math.pi * fallback_idx) / max(fallback_count, 1)
+        cx = sx + fallback_radius * math.cos(angle)
+        cy = sy + fallback_radius * math.sin(angle)
+        targets[i] = (cx, cy)
+        fallback_idx += 1
+
+    return targets

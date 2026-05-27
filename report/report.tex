@@ -63,15 +63,19 @@ controller is a Python function that the simulator (\code{standalone\_sim.py})
 calls each tick with the current world state, and must return a velocity
 command. The contribution of this work lies in the modules around
 \code{tp\_algos.py}: an obstacle-consensus law with both an asymptotic linear
-term and a barrier term; a 3D field-of-view sensor; a shared-memory broadcast
-channel between hiders; a cover-seeking primitive that picks a point
-geometrically behind an obstacle relative to the last-known seeker pose; and
-a controller-level 3D inter-drone repulsion that lives inside
+term and a barrier term; an inter-agent dispersion consensus law (gradient
+flow on the swarm potential $V = (k/2)\sum_{i\neq j} 1/\|p_i-p_j\|$) that
+maximizes pairwise distances among the hiders; a 3D field-of-view sensor; a
+shared-memory broadcast channel between hiders; a decentralized
+\emph{cover-assignment} primitive that solves a min-cost matching so each
+hider takes a distinct cover face behind an obstacle relative to the last-known
+seeker pose; and a controller-level 3D inter-drone repulsion that lives inside
 \code{tp\_algos.py} itself and adds a hard ``never closer than 1\,m'' fence on
 top of the per-controller behaviours. The overall control law combines a
-Lissajous roaming target, a consensus-based obstacle push, an in-controller
-2D inter-hider separation, a top-level 3D drone-to-drone separation, and soft
-boundary repulsion, with a single magnitude saturation at the actuator limit.
+weakened Lissajous exploration drift, a consensus-based obstacle push, the
+inter-agent dispersion consensus, a top-level 3D drone-to-drone separation,
+and soft boundary repulsion, with a single magnitude saturation at the
+actuator limit.
 \end{abstract}
 
 \tableofcontents
@@ -118,14 +122,17 @@ the dispatch shims, it hosts a controller-level 3D inter-drone repulsion
 seeker and hider commands. \emph{Edits kept inside the marked
 \code{TO BE MODIFIED} blocks.} \\
 \code{cf2\_milestone1.py} & Top-level hider controller: composes a goal force,
-obstacle consensus, in-plane CF2-to-CF2 separation, and boundary repulsion;
-switches between roaming and cover-seeking. \\
+obstacle consensus, inter-agent dispersion consensus, and boundary repulsion;
+switches between roaming and cover-assignment hide mode. \\
 \code{cf2\_sensing.py} & The hider's sensing primitives: intent heading and
 FoV-cone obstacle sensing on an axis-aligned bounding box (AABB) model. \\
-\code{cf2\_consensus.py} & The obstacle consensus law (linear + barrier),
-used by both hiders and seeker. \\
+\code{cf2\_consensus.py} & Two consensus laws: the obstacle push (linear +
+barrier, used by both hiders and seeker) and the inter-agent dispersion law
+(Coulomb-form gradient flow, used by the hiders to maximize pairwise
+distances). \\
 \code{cf2\_hider.py} & Inter-hider communication (shared seeker-sighting
-memory) and the cover-target geometry. \\
+memory), single-target cover geometry, and the multi-agent cover-assignment
+solver (deterministic min-cost matching). \\
 \code{rmtt\_seeker.py} & Seeker controller (\code{compute\_seeker\_cmd},
 which does \emph{not} accept hider positions) and the \code{can\_see}
 predicate shared with the referee and the hiders' seeker-detection logic. \\
@@ -154,17 +161,19 @@ At each tick $t = k\,\Delta t$ ($\Delta t = 0.05\,\text{s}$), the simulator:
 \end{enumerate}
 
 \paragraph{Default scenario.}
-The simulator ships with \code{nbRMTT = 1} seeker, \code{nbCF2 = 1} hider
-(scalable up to 3 in the TP framework), and \code{nbObstacle = 2}: a $1.0
-\times 0.5 \times 2.5$\,m pillar at $(-0.5, 1.5, 0)$ and a $0.5 \times 1.1
-\times 2.5$\,m pillar at $(0.8, -2.0, 0)$. The two pillars sit in opposing
-``rooms'' of the arena (positive vs.\ negative $y$), keep at least
-$1.4$\,m of clearance from every wall (well above $r_\mathrm{safe} = 0.6$\,m),
-and are $\sim 3.7$\,m apart center-to-center -- enough that the cover-seeking
-hider has a real choice of which side to flee toward, while the seeker's
-$y$-dominant Lissajous sweeps both rooms on every cycle. The RMTT starts at
-$(-1, 1, 0)$ and is forced into takeoff at $t = 0$; the CF2 starts at
-$(-1, 0, 0)$ and only takes off once its controller requests it.
+The simulator ships with \code{nbRMTT = 1} seeker, \code{nbCF2 = 4} hiders,
+and \code{nbObstacle = 2}: a $1.0 \times 0.5 \times 2.5$\,m pillar at
+$(-0.5, 1.5, 0)$ and a $0.5 \times 1.1 \times 2.5$\,m pillar at $(0.8, -2.0,
+0)$. The two pillars sit in opposing ``rooms'' of the arena (positive vs.\
+negative $y$), keep at least $1.4$\,m of clearance from every wall (well above
+$r_\mathrm{safe} = 0.6$\,m), and are $\sim 3.7$\,m apart center-to-center.
+With four hiders the swarm has roughly enough room to occupy one distinct
+cover face per drone (the two AABBs jointly expose up to eight far-side
+faces depending on seeker position), which is precisely what the
+cover-assignment law in Sec.~\ref{sec:cover} exploits. The RMTT starts at
+$(-1, 1, 0)$ and is forced into takeoff at $t = 0$; the CF2 hiders start
+roughly clustered along a diagonal near $(-1, 0)$ and take off once their
+controllers request it.
 
 % ============================================================
 \section{Mathematical model}
@@ -213,7 +222,7 @@ The controller assembles four terms:
     \vect{F}_\mathrm{total}
     \;=\; \vect{F}_\mathrm{goal}
         + \vect{F}_\mathrm{obs}
-        + \vect{F}_\mathrm{sep}
+        + \vect{F}_\mathrm{disp}
         + \vect{F}_\mathrm{bnd},
 \]
 and outputs the planar component of $\vect{F}_\mathrm{total}$ after a
@@ -224,11 +233,16 @@ vertical channel inside the simulator's 3D clamp).
 \subsubsection*{Goal attraction}
 \[
     \vect{F}_\mathrm{goal} \;=\; k_g \,(\vect{p}_\mathrm{goal} - \vect{p}),
-    \qquad k_g = 0.65.
+    \qquad k_g = 0.15.
 \]
 The goal is either the drone's Lissajous waypoint (Sec.~\ref{sec:lissajous})
-or its cover target (Sec.~\ref{sec:cover}), depending on whether the swarm is
-in roaming or hide mode.
+or its assigned cover target (Sec.~\ref{sec:cover}), depending on whether
+the swarm is in roaming or hide mode. The small gain ($0.15$, down from an
+earlier $0.65$) is deliberate: in roam mode it turns the Lissajous into a
+\emph{slow exploration drift}, so the inter-agent dispersion consensus below
+becomes the dominant driver and the swarm does not freeze at a fixed orbit
+the seeker can memorize; in hide mode the same small gain keeps the cover
+attraction from overwhelming the obstacle barrier near the cover face.
 
 \subsubsection*{Obstacle consensus}
 Each sensed obstacle $j$ contributes (see Sec.~\ref{sec:consensus})
@@ -243,23 +257,31 @@ Each sensed obstacle $j$ contributes (see Sec.~\ref{sec:consensus})
 with $d_j$ the distance to the obstacle surface, $\vect{n}_j$ the outward
 normal (surface $\to$ drone), and $\varepsilon = 0.02\,r_\mathrm{safe}$.
 
-\subsubsection*{In-plane CF2-to-CF2 separation}
-For each other hider $k$ within $d_0 = 0.9\,\text{m}$:
+\subsubsection*{Inter-agent dispersion consensus}
+\label{sec:disp-force}
+Per-agent gradient of the swarm potential
+$V_\mathrm{disp}(\vect{p}_1,\dots,\vect{p}_N) = \tfrac{k_\mathrm{disp}}{2}
+\sum_{i \ne j} 1/\|\vect{p}_i - \vect{p}_j\|$ in the $xy$ plane:
 \[
-    \vect{F}^{(k)}_\mathrm{sep} \;=\;
-    g_\mathrm{sep}\,
-    \frac{1}{d_{ik}^{\,2}}
-    \!\left(\frac{1}{d_{ik}} - \frac{1}{d_0}\right)
-    \,\hat{\vect{e}}_{ki},
-    \qquad g_\mathrm{sep} = 5.0,
+    \vect{F}^{(i)}_\mathrm{disp}
+    \;=\; -\nabla_{\vect{p}_i} V_\mathrm{disp}
+    \;=\; k_\mathrm{disp} \sum_{j \ne i}
+          \frac{\vect{p}_i - \vect{p}_j}{\|\vect{p}_i - \vect{p}_j\|^{3}},
+    \qquad k_\mathrm{disp} = 0.4.
 \]
-with $\hat{\vect{e}}_{ki} = (\vect{p}_i - \vect{p}_k)/\|\vect{p}_i - \vect{p}_k\|$
-restricted to the $xy$ plane. The shape vanishes smoothly at $d = d_0$ and
-grows unbounded as $d \to 0$ -- the same philosophy as the obstacle barrier,
-but between drones. This is a soft, planar inter-hider repulsion; a stricter
-3D ``never closer than 1\,m'' separation between \emph{all} flying drones
-(hiders \emph{and} seeker) is added on top in \code{tp\_algos.py}
-(Sec.~\ref{sec:tp-shim}).
+This is a true multi-agent consensus law on the aggregate cost $V_\mathrm{disp}$:
+every hider's local law decreases the \emph{same} scalar function along the
+joint gradient flow, so the swarm collectively minimizes $V_\mathrm{disp}$,
+equivalently maximizes inverse pairwise distances, equivalently spreads as
+far apart as the boundary and obstacle constraints allow. Unlike a
+short-range repulsion, the law acts at \emph{all} distances -- every hider
+always knows about every other hider's pull. Symmetry implies the centroid
+of the swarm is invariant under $\vect{F}_\mathrm{disp}$ alone (the goal,
+obstacle, and boundary terms then steer the centroid). A numerical floor
+$\varepsilon_\mathrm{disp} = 0.05\,\text{m}$ on the denominator avoids a
+blow-up if two hiders briefly co-locate. A stricter 3D ``never closer than
+1\,m'' separation between \emph{all} flying drones (hiders \emph{and} seeker)
+is added on top in \code{tp\_algos.py} (Sec.~\ref{sec:tp-shim}).
 
 \subsubsection*{Boundary repulsion}
 Each wall at distance $d$ inside a margin $m = 0.6\,\text{m}$ pushes inward:
@@ -325,7 +347,7 @@ The hiders communicate seeker sightings through a single module-level dict in
         seeker, intent\_heading, FOV\_HALF\_ANGLE = 60$^\circ$, range = 3.0\,m)},
         call \code{report\_seeker\_sighting(seeker\_pos, t)}.
   \item Read the shared memory via \code{get\_last\_seen(t)}. If a sighting
-        is fresher than $\text{TTL} = 8\,\text{s}$, switch the goal target
+        is fresher than $\text{TTL} = 5\,\text{s}$, switch the goal target
         to the cover point (next section); otherwise, use the Lissajous
         target.
 \end{enumerate}
@@ -333,43 +355,80 @@ The structural asymmetry is important: the seeker controller never reads or
 writes the shared memory, so ``hiders can talk to each other but the seeker
 can't listen'' is enforced by interface, not by convention.
 
-\subsection{Cover-seeking geometry}
+\subsection{Cover-assignment geometry (multi-agent)}
 \label{sec:cover}
 
-Given a last-known seeker position $\vect{s}$, the function
-\code{seek\_cover\_target} picks an $xy$ point behind one of the obstacles.
-For each obstacle with center $\vect{o}_j$ and half-extents $(h_x, h_y)$:
-\begin{enumerate}[leftmargin=1.4em]
-  \item Form the unit direction $\vect{u} = (\vect{o}_j - \vect{s})/\|\vect{o}_j -
-        \vect{s}\|$ from the seeker to the obstacle center.
-  \item Compute the parametric exit distance of the ray
-        $\vect{o}_j + t\,\vect{u}$ from the obstacle's AABB:
-        \[
-            t_\mathrm{surf} \;=\; \min\!\left( \frac{h_x}{|u_x|},
-                                               \frac{h_y}{|u_y|} \right),
-        \]
-        with the obvious degenerate handling when one of $u_x, u_y$ is zero.
-  \item The cover candidate is
-        \(
-            \vect{c}_j = \vect{o}_j + (t_\mathrm{surf} + d_\mathrm{cov})\,\vect{u},
-        \)
-        with $d_\mathrm{cov} = 0.8\,\text{m}$.
-\end{enumerate}
-The hider picks the candidate closest to its own position. The
-$d_\mathrm{cov} > r_\mathrm{safe}$ inequality is deliberate: the cover point
-sits \emph{outside} the obstacle-consensus push zone, so the hider can come
-to rest on the cover point without fighting the avoidance law.
+Hide mode is a small \emph{cooperative task-allocation} problem: there are
+several cover spots and several hiders, and the swarm wants every hider on a
+distinct spot so the seeker cannot harvest them in one cone sweep. The
+solution lives in \code{cf2\_hider.assign\_cover\_targets} and runs in three
+steps.
 
-A pure-flee fallback (move 1 m further from the seeker along the
-hider-to-seeker direction) is used when no obstacle is usable -- e.g.\ when
-the seeker happens to stand at an obstacle center.
+\paragraph{1. Candidate enumeration.}
+For every obstacle (center $\vect{o}_j$, half-extents $(h_x, h_y)$) and every
+AABB face with outward normal $\hat{\vect{n}} \in \{\pm\hat{\vect{e}}_x,
+\pm\hat{\vect{e}}_y\}$, build the candidate
+\[
+    \vect{c}_{j,\hat{\vect{n}}}
+    \;=\; \underbrace{\vect{o}_j + (\hat{\vect{n}} \cdot \vect{h})\,\hat{\vect{n}}}_{\text{face center}}
+    + d_\mathrm{cov}\,\hat{\vect{n}}, \qquad d_\mathrm{cov} = 0.8\,\text{m},
+\]
+where $\vect{h} = (h_x, h_y)$. The face is \emph{kept} only if
+$\hat{\vect{n}} \cdot (\vect{o}_j - \vect{s}) > 0$, i.e.\ the normal points
+away from the seeker -- only those faces actually occlude line of sight to
+the cover point. With two obstacles this yields up to eight candidates. The
+$d_\mathrm{cov} > r_\mathrm{safe}$ inequality is deliberate: the candidate
+sits \emph{outside} the obstacle-consensus push zone, so a hider can come to
+rest on it without fighting the avoidance law.
+
+\paragraph{2. Cost matrix.}
+With $N$ hiders and $M \ge N$ candidates, define
+\(
+    C_{ij} = \|\vect{p}_i^{xy} - \vect{c}_j\|_2^2.
+\)
+Squared distance gives the same min-cost solution as Euclidean distance and
+avoids $N \cdot M$ square roots.
+
+\paragraph{3. Min-cost injective assignment.}
+Find $\pi : \{1,\dots,N\} \to \{1,\dots,M\}$ injective minimizing $\sum_i
+C_{i,\pi(i)}$. For the default scenario $(N, M) \le (4, 8)$ the search space
+is $P(M, N) \le 1680$ permutations, so a branch-and-bound brute force is
+faster and dependency-free compared to importing SciPy's
+\code{linear\_sum\_assignment}. The implementation prunes any partial
+assignment whose accumulated cost already exceeds the best complete one.
+
+\paragraph{Decentralization.}
+The simulator hands every hider the same \code{cf2\_poses} matrix and the
+same shared seeker sighting; \code{assign\_cover\_targets} is deterministic
+in those inputs. So every hider independently computes the \emph{same}
+matching and reads its own row from the result -- a consensus reached by
+``every node solves the same optimization'' rather than by message
+exchange. No explicit communication is needed beyond the existing
+shared-memory sighting channel.
+
+\paragraph{Fallback.}
+If $M < N$ (one obstacle, or the seeker hides most far-side faces), the
+$N - M$ leftover hiders fan out radially around the seeker at distance
+$1.5\,\text{m}$ on angles $2\pi k / (N - M)$. They no longer get a true
+occlusion but they no longer pile up either, and the dispersion consensus
+keeps pushing them apart in the meantime. The single-target
+\code{seek\_cover\_target} function (older nearest-cover-only behaviour) is
+kept exported for backward compatibility and tests, but is no longer on the
+hot path.
 
 % ============================================================
-\section{Obstacle consensus law (\code{cf2\_consensus.py})}
+\section{Consensus laws (\code{cf2\_consensus.py})}
 \label{sec:consensus}
 % ============================================================
 
-\subsection{Definition}
+The module hosts two consensus laws used by the hiders. The obstacle
+consensus (Sec.~\ref{sec:obs-consensus}) is also used by the seeker. The
+inter-agent dispersion law (Sec.~\ref{sec:disp-consensus}) is hider-only and
+is what gives the swarm its coordinated ``spread out'' behaviour.
+
+\subsection{Obstacle consensus}
+\label{sec:obs-consensus}
+\subsubsection*{Definition}
 
 Given a list of sensed obstacles, each with closest-surface distance $d_j$ and
 outward normal $\vect{n}_j$, the consensus command is
@@ -383,7 +442,7 @@ The function does \emph{not} saturate; saturation is the caller's
 responsibility (the hider controller applies the magnitude cap on the summed
 force, after adding the goal/separation/boundary contributions).
 
-\subsection{Properties}
+\subsubsection*{Properties}
 
 \paragraph{Asymptotic (linear term).}
 Define $e_j(\vect{p}) = \max(0, r_\mathrm{safe} - d_j(\vect{p}))$ and the
@@ -412,6 +471,71 @@ The denominator uses $\max(d_j, \varepsilon)$ with
 $\varepsilon = 0.02\,r_\mathrm{safe} = 12\,\text{mm}$. In simulation a drone may
 briefly penetrate an obstacle due to the discrete integration step; this clamp
 keeps the law finite while still producing a very large push.
+
+\subsection{Inter-agent dispersion consensus}
+\label{sec:disp-consensus}
+
+\subsubsection*{Definition}
+For the hider swarm $\{\vect{p}_1, \dots, \vect{p}_N\} \subset \mathbb{R}^2$
+(only the planar component enters the law), define the aggregate cost
+\[
+    V_\mathrm{disp}(\vect{p}_1, \dots, \vect{p}_N)
+    \;=\; \frac{k_\mathrm{disp}}{2}
+          \sum_{\substack{i, j \\ i \ne j}}
+          \frac{1}{\|\vect{p}_i - \vect{p}_j\|}.
+\]
+Each hider runs the per-agent gradient descent
+\[
+    \vect{u}_i \;=\; -\nabla_{\vect{p}_i} V_\mathrm{disp}
+    \;=\; k_\mathrm{disp} \sum_{j \ne i}
+          \frac{\vect{p}_i - \vect{p}_j}{\|\vect{p}_i - \vect{p}_j\|^{3}}.
+\]
+This is the Coulomb form: agent $i$ feels an inverse-square push (in
+\emph{magnitude} per unit charge) from every other agent. The
+implementation floors $\|\vect{p}_i - \vect{p}_j\|$ at
+$\varepsilon_\mathrm{disp} = 0.05\,\text{m}$ to keep the gradient bounded if
+two hiders briefly co-locate.
+
+\subsubsection*{Properties}
+
+\paragraph{Aggregate Lyapunov.}
+$V_\mathrm{disp}$ is itself a Lyapunov function for the joint flow
+$\dot{\vect{p}}_i = \vect{u}_i$ on the unconstrained domain
+$\{\vect{p}_i \ne \vect{p}_j \;\forall i \ne j\}$:
+\[
+    \dot{V}_\mathrm{disp}
+    \;=\; \sum_i \nabla_{\vect{p}_i} V_\mathrm{disp} \cdot \dot{\vect{p}}_i
+    \;=\; -\sum_i \|\nabla_{\vect{p}_i} V_\mathrm{disp}\|^2
+    \;\le\; 0,
+\]
+with equality only at critical configurations of $V_\mathrm{disp}$. Every
+hider's local descent decreases the \emph{same} swarm-level scalar -- the
+defining property of a consensus law on an aggregate cost.
+
+\paragraph{Long-range coupling.}
+There is no cutoff: every other hider always contributes. Contrast with a
+short-range repulsion (e.g.\ $1/d^2$ inside a 0.9\,m influence radius and
+zero outside): such a law is silent the moment the swarm is more than
+0.9\,m apart, so it cannot push two well-separated hiders further apart.
+The Coulomb form pushes at any distance, so the equilibrium is determined
+by the boundary and obstacle constraints, not by the law going silent.
+
+\paragraph{Centroid invariance and bounded equilibria.}
+$\vect{F}^{(j \to i)}_\mathrm{disp} = -\vect{F}^{(i \to j)}_\mathrm{disp}$
+(Newton's third law in form), so the swarm centroid is invariant under
+$\vect{F}_\mathrm{disp}$ alone. Bounded equilibria emerge from the
+combination with the boundary repulsion of Sec.~\ref{sec:disp-force}: the
+walls confine the swarm to the arena while $\vect{F}_\mathrm{disp}$
+pushes the hiders to the configuration with maximum pairwise distances
+inside that confinement.
+
+\paragraph{Decentralization.}
+The law uses only $\vect{p}_i$ and $\{\vect{p}_j\}_{j \ne i}$ -- the
+simulator-provided pose matrix is the only neighbourhood query needed, no
+extra messaging. In a real deployment the assumed information flow is
+``each hider broadcasts its position to all the others at controller
+frequency''. The shared-memory channel already exists for seeker sightings
+(Sec.~\ref{sec:cover}) and would extend trivially to position broadcasts.
 
 % ============================================================
 \section{Sensing (\code{cf2\_sensing.py})}
@@ -520,7 +644,7 @@ explicit ``inside the slab?'' check.
 The shared state is a single module-level dict:
 \begin{lstlisting}
 _last_seen = {'position': None, 'timestamp': None}
-SEEKER_MEMORY_TTL = 8.0  # seconds
+SEEKER_MEMORY_TTL = 5.0  # seconds
 \end{lstlisting}
 Writers (\code{report\_seeker\_sighting}) overwrite both fields atomically;
 readers (\code{get\_last\_seen}) compare \code{t - timestamp} against the TTL
@@ -529,11 +653,13 @@ because the question is ``what is the most recent fix on the seeker'', and
 between two sightings the older one offers no extra information.
 
 \paragraph{TTL choice.}
-$8\,\text{s}$ is comfortably longer than the time the seeker takes to cross
-the arena (roughly half of its $48\,\text{s}$ $y$-cycle, so $\approx 24$\,s
-end-to-end) but much shorter than a full sweep. Practically: the swarm stays
-in hide mode while the threat is plausibly nearby, and returns to roaming
-within $\sim$\,8\,s after the seeker has moved out of sight.
+$5\,\text{s}$ is enough to keep the swarm in hide mode for several controller
+cycles after a sighting (the cover-assignment step is itself updated every
+tick, so the swarm reshuffles quickly inside the window), yet much shorter
+than a full seeker sweep, so the hiders return to dispersion-driven roaming
+soon after the threat leaves sight. The exact value is not critical: a
+shorter TTL biases the swarm toward exploration (more dispersion, less time
+spent in cover), a longer one biases it toward defence.
 
 \paragraph{Threading.}
 The simulator runs each controller in a \code{ThreadPoolExecutor}. Python's
@@ -610,8 +736,12 @@ deficit:
 \]
 A degenerate case ($d_{ik} < \varepsilon = 10^{-6}$\,m) returns a fixed $+x$
 push so the function never divides by zero. The sum operates in all three
-axes, contrary to the planar separation in \code{cf2\_milestone1}, which
-matters when a hider and the seeker happen to be vertically aligned.
+axes, contrary to the planar dispersion consensus in \code{cf2\_milestone1}
+which only sees $xy$; the 3D component matters when a hider and the seeker
+happen to be vertically aligned (which the dispersion law ignores by
+construction). The two laws compose by addition, so this fence acts as a
+short-range 3D safety net on top of whatever long-range $xy$ geometry the
+dispersion law has chosen.
 
 \subsection{How the helper is used}
 
@@ -732,9 +862,12 @@ $\theta_\mathrm{fov}$ hiders & $60^\circ$ & Forward cone for seeker detection
 and visualization. \\
 sensing radius & 2.0 m & Obstacle sensing range (hider and seeker). \\
 seeker detection range & 3.0 m & Hider-side range to detect the seeker. \\
-$d_0$ (sep) & 0.9 m & In-plane CF2-to-CF2 separation influence radius
-(\code{cf2\_milestone1}). \\
-$g_\mathrm{sep}$ & 5 & In-plane CF2-to-CF2 separation gain. \\
+$k_\mathrm{disp}$ & 0.4 & Inter-agent dispersion gain
+(\code{cf2\_milestone1.K\_DISP}); scale of the Coulomb-form swarm push. \\
+$\varepsilon_\mathrm{disp}$ & 0.05 m & Pairwise-distance floor inside the
+dispersion law (numerical safety). \\
+$k_g$ & 0.15 & Goal attraction gain in the hider controller (weakened so
+dispersion dominates). \\
 $d_\mathrm{min}$ & 1.0 m & 3D drone-to-drone hard-fence trigger
 (\code{tp\_algos.DRONE\_MIN\_DISTANCE}). \\
 $g_\mathrm{rep}$ & 1.0 & 3D drone-to-drone repulsion gain
@@ -744,7 +877,7 @@ $g_\mathrm{bnd}$ & 0.09 & Wall push gain. \\
 $v_\mathrm{max}^\mathrm{xy}$ hider & 0.45 m/s & Final xy saturation, $< $ MAX\_V\_CF2. \\
 $Z$ rate limit & 0.3 m & Per-call $|z_\mathrm{dist} - z|$ cap. \\
 $d_\mathrm{cov}$ & 0.8 m & Cover offset past the obstacle surface. \\
-TTL & 8 s & Lifetime of a seeker sighting in shared memory. \\
+TTL & 5 s & Lifetime of a seeker sighting in shared memory. \\
 $\theta_\mathrm{seek}$ & $30^\circ$ & Seeker FoV half-angle. \\
 seeker vision range & 3.5 m & Seeker FoV slant length. \\
 $\Omega_X^S, \Omega_Y^S, \Omega_Z^S$ & 0.18, 0.13, 0.08 rad/s & Seeker Lissajous. \\
@@ -786,6 +919,31 @@ parametric ray-AABB exit and adds the offset \emph{past} the surface; combined
 with $d_\mathrm{cov} > r_\mathrm{safe}$ this gives a cover point that sits in
 the safe set, so the hider can rest there without being pushed away.
 
+\paragraph{Why a gradient flow (Coulomb potential) for inter-hider dispersion.}
+The earlier implementation used a short-range inverse-square push with a
+$0.9\,\text{m}$ cutoff -- effective for collision avoidance but invisible
+beyond that radius, so the swarm could perfectly well sit on four parallel
+Lissajous orbits and offer the seeker a tightly-correlated target. Replacing
+it with $\vect{u}_i = -\nabla_{\vect{p}_i} V_\mathrm{disp}$ on the Coulomb
+potential gives \emph{(i)} a single aggregate cost that all agents
+collectively minimize -- the textbook multi-agent consensus signature
+\emph{(ii)} a force that never goes silent, so any contraction of the swarm
+is met by an immediate restoring push, and \emph{(iii)} a closed-form
+Lyapunov certificate. The price is the equilibrium configuration depends on
+the boundary repulsion, which is why $g_\mathrm{bnd}$ stays small ($0.09$):
+strong walls would push the swarm into the centre and undo the dispersion.
+
+\paragraph{Why an explicit cover assignment, not nearest-cover-per-agent.}
+With four hiders and two obstacles, the ``each hider runs to its closest
+cover'' policy frequently sends two hiders to the same face. Once they
+arrive, the dispersion push spreads them but they remain on the same
+\emph{visible} side of the obstacle -- a single seeker sweep is enough to
+catch both. Solving a min-cost matching makes the assignment a global
+property of the swarm, and the candidate set is built per-face (not
+per-obstacle) so the granularity matches the number of hiders. Decentralized
+execution falls out of determinism: every hider computes the same
+optimization on the same inputs and reads its own row.
+
 \paragraph{Why hide the hider positions from the seeker controller specifically.}
 The \emph{planning} module of the seeker, \code{compute\_seeker\_cmd}, does
 not accept \code{cf2\_poses}. The \code{tp\_algos} wrapper still has access to
@@ -813,10 +971,13 @@ controllers only care about ``most recent fix on the seeker''.
         \code{can\_see} predicate is already multi-seeker aware (the referee
         loops over all flying RMTTs). What is missing is a seeker
         coordination law that splits the arena and avoids redundant sweeps.
-  \item \textbf{Bounded/asymptotic consensus toward the swarm centroid.}
-        The current inter-hider law is repulsive only. Adding a weak
-        attractive term toward the swarm centroid would produce the
-        bounded-consensus behaviour mentioned in the project brief.
+  \item \textbf{Bounded consensus with a soft centroid anchor.} The
+        inter-agent dispersion law is purely repulsive; bounded equilibria
+        currently come from the arena walls. Adding a weak attractive term
+        toward a moving centroid (or toward an assigned region centroid in
+        a Voronoi tessellation) would give a true bounded-consensus
+        behaviour and would let the swarm hold formation away from the
+        walls.
   \item \textbf{Per-hider altitude diversity.} The $A_z$ term is already
         threaded through \code{intent\_heading} but stripped from
         \code{\_lissajous\_target}, so the FoV cone wobbles in $z$ while the
@@ -824,12 +985,21 @@ controllers only care about ``most recent fix on the seeker''.
         position target would spread the hiders vertically, making the
         seeker's narrow cone less effective; the $Z$ rate limit
         ($0.3$\,m/call) is already small enough that this would not destabilize
-        the actuator saturation.
-  \item \textbf{Persistent cover assignment.} The current
-        \code{seek\_cover\_target} picks the nearest cover per drone every
-        tick; under heavy cover demand two hiders may oscillate on the same
-        side of the same obstacle. A simple ``don't reconsider for $\tau$
-        seconds'' rule would prevent the chatter.
+        the actuator saturation. The dispersion law could also be promoted
+        to 3D for the same effect, by extending the gradient sum to $z$.
+  \item \textbf{Hysteresis on the cover assignment.} The min-cost matching
+        is recomputed every tick on the latest poses, which makes it react
+        instantly to seeker motion but also occasionally swaps the roles of
+        two hiders when their costs cross. A small hysteresis (refuse to
+        switch unless the alternative is better by $\delta > 0$) would
+        damp the swaps without changing the steady-state assignment.
+  \item \textbf{Connectivity-preserving dispersion.} The current Coulomb
+        law diverges in the limit of zero distance and decays in the limit
+        of infinite distance, which makes the swarm spread to the boundary.
+        A connectivity-preserving alternative (e.g.\ a potential with a
+        finite well at a target spacing) would let the swarm stay inside
+        a sensing radius for explicit position broadcasts, matching the
+        wireless-range constraint of the real Vol\`iere hardware.
 \end{itemize}
 
 \appendix

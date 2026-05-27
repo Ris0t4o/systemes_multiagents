@@ -23,14 +23,20 @@ import numpy as np
 
 try:
     from .cf2_sensing import intent_heading, sense_obstacles
-    from .cf2_consensus import obstacle_consensus_cmd
-    from .cf2_hider import report_seeker_sighting, get_last_seen, seek_cover_target
+    from .cf2_consensus import obstacle_consensus_cmd, inter_agent_dispersion_cmd
+    from .cf2_hider import (
+        report_seeker_sighting, get_last_seen,
+        seek_cover_target, assign_cover_targets,
+    )
     from .rmtt_seeker import can_see
 except ImportError:
     # Allow importing this file standalone for testing/debugging.
     from cf2_sensing import intent_heading, sense_obstacles
-    from cf2_consensus import obstacle_consensus_cmd
-    from cf2_hider import report_seeker_sighting, get_last_seen, seek_cover_target
+    from cf2_consensus import obstacle_consensus_cmd, inter_agent_dispersion_cmd
+    from cf2_hider import (
+        report_seeker_sighting, get_last_seen,
+        seek_cover_target, assign_cover_targets,
+    )
     from rmtt_seeker import can_see
 
 # Milestone-1 constants tuned for stable roaming in standalone_sim bounds.
@@ -62,6 +68,12 @@ SENSING_RADIUS = 2.0
 R_SAFE = 0.6                        # m, desired clearance to obstacle surface
 K_OBS = 2.0                         # 1/s, linear consensus gain
 K_BARRIER = 0.5                     # m/s, barrier strength near contact (dominates any bounded attraction as d -> 0)
+
+# Swarm dispersion gain. Sets the scale of the inter-agent Coulomb law in
+# cf2_consensus.inter_agent_dispersion_cmd: at d = 1 m the per-pair push has
+# magnitude K_DISP. Comparable to the (now-weakened) goal_gain so dispersion
+# can outweigh the Lissajous when the swarm is bunched up.
+K_DISP = 0.4
 
 # Seeker-detection (hider looks for the seeker through its own forward cone).
 HIDER_SEEKER_DETECTION_RANGE = 3.0  # m, deliberately larger than SENSING_RADIUS
@@ -160,14 +172,24 @@ def compute_roaming_cmd(robot_no, robot_pose, cf2_poses, rmtt_poses, obstacle_po
     # collectively as soon as ANY hider has reported a sighting in the last TTL.
     last_seen = get_last_seen(t)
     if last_seen is not None:
-        tx, ty, _ = seek_cover_target(robot_pose, last_seen, obstacle_pose, obstacle_size)
+        # Multi-agent cover assignment: every hider runs the same deterministic
+        # min-cost matching, so each gets a DISTINCT cover face. Stops the old
+        # behavior where all hiders chased the same nearest cover and stacked
+        # up where the seeker could sweep them in one cone.
+        cf2_xy = [(float(cf2_poses[0, j]), float(cf2_poses[1, j]))
+                  for j in range(cf2_poses.shape[1] if cf2_poses.size else 0)]
+        covers = assign_cover_targets(cf2_xy, last_seen, obstacle_pose, obstacle_size)
+        tx, ty = covers[robot_no - 1]
     else:
         tx, ty = tx_roam, ty_roam
 
     # 1) Goal attraction toward (tx, ty) -- Lissajous target or cover target.
-    # Pure proportional: simple, well-behaved, and the saturation step below
-    # makes the bounded actuation explicit.
-    goal_gain = 0.65
+    # In roam mode the Lissajous is a WEAK exploration drift (small gain) so the
+    # dispersion consensus below is the dominant driver and the swarm doesn't
+    # freeze at a static equilibrium the seeker can memorize. In hide mode the
+    # same small gain is fine because (tx, ty) is the assigned cover and we
+    # don't want a giant force overwhelming the obstacle barrier near it.
+    goal_gain = 0.15
     fx = goal_gain * (tx - px)
     fy = goal_gain * (ty - py)
 
@@ -185,29 +207,20 @@ def compute_roaming_cmd(robot_no, robot_pose, cf2_poses, rmtt_poses, obstacle_po
     # change the control law -- the barrier already handles the dynamics.
     is_emergency = any(s['distance'] < emergency_dist for s in sensed)
 
-    # 3) CF2-to-CF2 separation
-    # Inverse-square push inside an influence radius. Same shape as the barrier
-    # but in 2D between drones rather than drone-to-surface.
-    sep_influence = 0.9
-    sep_gain = 5.0
+    # 3) Inter-agent dispersion consensus (long-range, gradient flow).
+    # Per-agent gradient of the swarm potential V = (k/2)*sum 1/d_ij. Acts at
+    # all ranges, so every hider always pulls every other hider apart -- unlike
+    # the old 0.9 m repulsion, which was silent past 0.9 m. See
+    # cf2_consensus.inter_agent_dispersion_cmd for the Lyapunov story.
     n_cf2 = cf2_poses.shape[1] if cf2_poses.size else 0
     self_idx = robot_no - 1
-    for j in range(n_cf2):
-        if j == self_idx:
-            continue
-        ox = float(cf2_poses[0, j])
-        oy = float(cf2_poses[1, j])
-        dx = px - ox
-        dy = py - oy
-        dist = math.hypot(dx, dy)
-        if dist < sep_influence and dist > 1e-6:
-            ux = dx / dist
-            uy = dy / dist
-            # mag ~ (1/d - 1/d0) / d^2 ; vanishes smoothly at d = d0 and blows
-            # up as d -> 0, mirroring the obstacle barrier philosophy.
-            mag = sep_gain * (1.0 / dist - 1.0 / sep_influence) / (dist * dist)
-            fx += mag * ux
-            fy += mag * uy
+    neighbor_xy = [
+        (float(cf2_poses[0, j]), float(cf2_poses[1, j]))
+        for j in range(n_cf2) if j != self_idx
+    ]
+    fx_disp, fy_disp = inter_agent_dispersion_cmd((px, py), neighbor_xy, K_DISP)
+    fx += fx_disp
+    fy += fy_disp
 
     # 4) Soft boundary repulsion
     # Each wall gets the same 1/d - 1/d0 push as the inter-drone separation.
