@@ -55,10 +55,11 @@ _K_OBS = 2.0
 _K_BARRIER = 0.5
 
 # --- Cruise speeds -------------------------------------------------------
-# Slightly under MAX_V_RMTT = 0.6 to leave headroom for the obstacle push
-# without the simulator's 3D clamp scaling everything down.
-_VMAX_XY = 0.55                 # close to MAX_V_RMTT = 0.6 in the sim
-_VMAX_Z = 0.35
+# Deliberately slower than the hider cap (0.55 in cf2_milestone1) so the
+# hiders can outrun the seeker once spotted -- the game was unwinnable for
+# the hiders when the seeker was the faster agent.
+_VMAX_XY = 0.35
+_VMAX_Z = 0.25
 _GOAL_GAIN = 0.6
 
 
