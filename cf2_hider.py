@@ -1,6 +1,6 @@
 """
 Hider-side coordination: shared seeker-sighting memory and cover geometry.
-The seeker never touches _last_seen — communication is hider-only.
+The seeker never touches _last_seen. communication is hider-only.
 """
 
 import math
@@ -19,8 +19,13 @@ SEEKER_MEMORY_TTL = 5.0
 
 def report_seeker_sighting(seeker_pos, timestamp):
     """A hider that just saw the seeker writes here."""
+    prev_ts = _last_seen['timestamp']
+    ts = float(timestamp)
+    # Entering alert from roam (no sighting, or last one expired) → fresh cover solve.
+    if prev_ts is None or ts - prev_ts > SEEKER_MEMORY_TTL:
+        reset_cover_cache()
     _last_seen['position'] = (float(seeker_pos[0]), float(seeker_pos[1]), float(seeker_pos[2]))
-    _last_seen['timestamp'] = float(timestamp)
+    _last_seen['timestamp'] = ts
 
 
 def get_last_seen(current_time):
@@ -102,6 +107,28 @@ def seek_cover_target(robot_pose, seeker_pos, obstacle_pose, obstacle_size):
 _AABB_FACE_NORMALS = ((+1.0, 0.0), (-1.0, 0.0), (0.0, +1.0), (0.0, -1.0))
 
 
+# Lock the (hider -> face) mapping for the duration of an alert period so the
+# brute-force matching can't oscillate frame-to-frame on near-ties.
+_cover_assignment_cache = {
+    'assignment': None,            # list of (cx, cy) per hider
+    'computed_at': None,           # sim time when computed
+    'seeker_pos_at_compute': None, # seeker xyz when computed
+}
+
+# Refresh interval (s) for the cached assignment, so a slowly drifting seeker
+# eventually triggers a re-solve even if it never crosses the position gate.
+_COVER_CACHE_MAX_AGE = 1.0
+# Position gate: seeker moves more than this since the cache was built -> resolve.
+_COVER_CACHE_SEEKER_DELTA = 0.5
+
+
+def reset_cover_cache():
+    """Invalidate the cached assignment. Called when the swarm re-enters alert."""
+    _cover_assignment_cache['assignment'] = None
+    _cover_assignment_cache['computed_at'] = None
+    _cover_assignment_cache['seeker_pos_at_compute'] = None
+
+
 def _enumerate_cover_candidates(seeker_pos, obstacle_pose, obstacle_size):
     """Per-face cover points on the far side of each obstacle."""
     sx = float(seeker_pos[0])
@@ -131,7 +158,7 @@ def _enumerate_cover_candidates(seeker_pos, obstacle_pose, obstacle_size):
 def _best_assignment(cost_matrix):
     """Brute-force optimal injective assignment (N rows to M cols, N <= M).
 
-    Search space stays tiny (<= 1680 perms for N=4, M=8) — avoids a SciPy dep.
+    Search space stays tiny (<= 1680 perms for N=4, M=8). avoids a SciPy dep.
     """
     n = len(cost_matrix)
     if n == 0:
@@ -163,15 +190,31 @@ def _best_assignment(cost_matrix):
     return best_assign if best_assign is not None else list(range(n))
 
 
-def assign_cover_targets(cf2_xy, seeker_pos, obstacle_pose, obstacle_size):
+def assign_cover_targets(cf2_xy, seeker_pos, obstacle_pose, obstacle_size, current_time):
     """
     Decentralized cover assignment: every hider runs this deterministic
     min-cost matching on identical inputs and reaches the same global
     assignment without exchanging messages.
 
+    Caches the result for ~1 s (and until the seeker moves more than ~0.5 m)
+    so the assignment can't flicker between near-tie candidates frame to frame.
+
     Returns one (cx, cy) per hider (indexed by robot_no - 1). Hiders left
     without a real cover candidate get a fanned-out fallback around the seeker.
     """
+    # Cache hit: same seeker position (approximately), still fresh.
+    cached = _cover_assignment_cache['assignment']
+    if cached is not None and len(cached) == len(cf2_xy):
+        t_prev = _cover_assignment_cache['computed_at']
+        sp = _cover_assignment_cache['seeker_pos_at_compute']
+        if t_prev is not None and sp is not None:
+            age = float(current_time) - float(t_prev)
+            ds2 = ((float(seeker_pos[0]) - sp[0]) ** 2
+                   + (float(seeker_pos[1]) - sp[1]) ** 2
+                   + (float(seeker_pos[2]) - sp[2]) ** 2)
+            if age < _COVER_CACHE_MAX_AGE and ds2 < _COVER_CACHE_SEEKER_DELTA ** 2:
+                return cached
+
     n_hiders = len(cf2_xy)
     candidates = _enumerate_cover_candidates(seeker_pos, obstacle_pose, obstacle_size)
     sx = float(seeker_pos[0])
@@ -207,4 +250,9 @@ def assign_cover_targets(cf2_xy, seeker_pos, obstacle_pose, obstacle_size):
         targets[i] = (cx, cy)
         fallback_idx += 1
 
+    _cover_assignment_cache['assignment'] = targets
+    _cover_assignment_cache['computed_at'] = float(current_time)
+    _cover_assignment_cache['seeker_pos_at_compute'] = (
+        float(seeker_pos[0]), float(seeker_pos[1]), float(seeker_pos[2])
+    )
     return targets
