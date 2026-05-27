@@ -20,20 +20,22 @@ Tb3W_pose = [[1.0, 0.0, 0.0]]  # x, y, theta
 
 nbRMTT = 1
 # Seeker spawns mid-arena, on the -x side, between the two obstacles. Sits
-RMTT_pose = [[-1.5, 0.0, 0.0]]  # x, y, z
+RMTT_pose = [[1.5, 1.0, 0.0]]  # x, y, z
 
-nbCF2 = 4
+nbCF2 = 1
 # Hiders spawn at the four corners of an inset rectangle (x = +/-1.8 m,
 
-CF2_pose = [[-1.8, -3.8, 0.0], [0.8, -3.8, 0.0],
-            [-1.8, +2.8, 0.0], [+1.8, +3.8, 0.0]]  # x, y, z
+CF2_pose = [[-1.8, -3.8, 0.0], 
+            #[0.8, -3.8, 0.0],
+            #[-1.8, +2.8, 0.0], [+1.8, +3.8, 0.0]
+            ]  # x, y, z
 
 nbRMEP = 0
 RMEP_pose = [[-1.0, -1.0, 0.0]]  # x, y, theta
 
-nbObstacle = 2
-obstacle_size = [[1.0, 0.5, 2.5], [0.5, 1.1, 2.5]]
-obstacle_pose = [[-0.5, 1.5, 0.0], [0.8, -2.0, 0.0]]
+nbObstacle = 3
+obstacle_size = [[1.0, 0.5, 2.5], [0.5, 1.1, 2.5], [3.0, 1.0, 2.5]]
+obstacle_pose = [[-0.5, 1.5, 0.0], [0.8, -2.0, 0.0], [0.0, 0.0, 0.0]]
 
 # ==========================================
 # 2. HARDWARE SPECS (SPEEDS, RADII, TIMERS)

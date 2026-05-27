@@ -58,9 +58,9 @@ _K_BARRIER = 0.5
 # Deliberately slower than the hider cap (0.55 in cf2_milestone1) so the
 # hiders can outrun the seeker once spotted -- the game was unwinnable for
 # the hiders when the seeker was the faster agent.
-_VMAX_XY = 0.35
-_VMAX_Z = 0.25
-_GOAL_GAIN = 0.6
+_VMAX_XY = 0.6
+_VMAX_Z = 0.6
+_GOAL_GAIN = 0.8
 
 
 def _seeker_target(t):
