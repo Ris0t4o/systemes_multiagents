@@ -171,9 +171,19 @@ With four hiders the swarm has roughly enough room to occupy one distinct
 cover face per drone (the two AABBs jointly expose up to eight far-side
 faces depending on seeker position), which is precisely what the
 cover-assignment law in Sec.~\ref{sec:cover} exploits. The RMTT starts at
-$(-1, 1, 0)$ and is forced into takeoff at $t = 0$; the CF2 hiders start
-roughly clustered along a diagonal near $(-1, 0)$ and take off once their
-controllers request it.
+$(-1.5,\,0,\,0)$ -- mid-arena on the $-x$ side, between the two obstacles --
+and is forced into takeoff at $t = 0$. The four CF2 hiders start at the
+corners of an inset rectangle, $(\pm 1.8,\,\pm 3.8,\,0)$, and take off once
+their controllers request it. The corner layout was chosen to satisfy four
+simultaneous constraints at $t = 0$: pairwise hider spacing $\ge 3.6$\,m
+(well above the 1\,m hard floor of Sec.~\ref{sec:tp-shim}), seeker-to-hider
+distance $\ge 3.82$\,m (outside the seeker's 3.5\,m vision range, so no
+hider is in the seeker's cone at spawn), wall clearance $\ge 0.7$\,m (outside
+the 0.6\,m boundary repulsion margin), and obstacle clearance $\ge 1.35$\,m
+(well above $r_\mathrm{safe} = 0.6$\,m). Each room of the arena -- positive
+and negative $y$ -- starts with two hiders, so the cover-assignment law
+always has candidates on both sides regardless of where the seeker's sweep
+takes it first.
 
 % ============================================================
 \section{Mathematical model}
