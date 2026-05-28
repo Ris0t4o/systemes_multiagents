@@ -42,6 +42,12 @@ _VMAX_XY = 0.6
 _VMAX_Z = 0.6
 _GOAL_GAIN = 0.8
 
+# Arena bounds — must match standalone_sim.py.
+_X_MIN, _X_MAX = -2.5, 2.5
+_Y_MIN, _Y_MAX = -4.5, 4.5
+_BOUNDARY_MARGIN = 0.6
+_BOUNDARY_GAIN = 0.3
+
 
 def _seeker_target(t):
     """Instantaneous Lissajous target."""
@@ -93,6 +99,20 @@ def compute_seeker_cmd(robot_no, robot_pose, obstacle_pose, obstacle_size, clock
     )
     fx += fx_obs
     fy += fy_obs
+
+    # Soft 1/d boundary repulsion
+    left = px - _X_MIN
+    right = _X_MAX - px
+    down = py - _Y_MIN
+    up = _Y_MAX - py
+    if left < _BOUNDARY_MARGIN:
+        fx += _BOUNDARY_GAIN * (1.0 / max(left, 1e-4) - 1.0 / _BOUNDARY_MARGIN)
+    if right < _BOUNDARY_MARGIN:
+        fx -= _BOUNDARY_GAIN * (1.0 / max(right, 1e-4) - 1.0 / _BOUNDARY_MARGIN)
+    if down < _BOUNDARY_MARGIN:
+        fy += _BOUNDARY_GAIN * (1.0 / max(down, 1e-4) - 1.0 / _BOUNDARY_MARGIN)
+    if up < _BOUNDARY_MARGIN:
+        fy -= _BOUNDARY_GAIN * (1.0 / max(up, 1e-4) - 1.0 / _BOUNDARY_MARGIN)
 
     speed_xy = math.hypot(fx, fy)
     if speed_xy > _VMAX_XY and speed_xy > 1e-9:
