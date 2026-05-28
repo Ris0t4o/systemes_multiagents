@@ -35,7 +35,8 @@ def intent_heading(robot_no, current_pose, t):
     tz = _PATH_CENTER_Z + _PATH_AMP_Z * math.sin(omega_z * t + phase_z)
     dx = tx - px
     dy = ty - py
-    dz = tz - pz
+    dz = 0.0
+    #dz = tz - pz
     norm = math.sqrt(dx * dx + dy * dy + dz * dz)
     if norm < 1e-6:
         return 1.0, 0.0, 0.0
@@ -84,7 +85,8 @@ def sense_obstacles(robot_pose, heading, fov_half_angle, sensing_radius,
         cx, cy, cz = _closest_point_to_obstacle(px, py, pz, ox, oy, sx, sy, sz)
         dx = cx - px
         dy = cy - py
-        dz = cz - pz
+        dz = 0.0
+        #dz = cz - pz
         distance = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         if distance > sensing_radius:

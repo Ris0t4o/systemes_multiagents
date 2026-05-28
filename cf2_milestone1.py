@@ -37,7 +37,7 @@ _PATH_CENTER_Z = 1.0
 _PATH_AMP_X = 1.6
 _PATH_AMP_Y = 3.0
 _PATH_AMP_Z = 0.5
-_Z_RATE_LIMIT = 0.3                 # m/call cap on z change, keeps xy saturation honest
+_Z_RATE_LIMIT = 0.01                 # m/call cap on z change, keeps xy saturation honest
 
 # Forward cone used for seeker detection and visualization only.
 # Obstacle sensing is omnidirectional (math.pi).
@@ -50,7 +50,7 @@ K_BARRIER = 0.5
 # Coulomb-style dispersion gain, comparable to goal_gain.
 K_DISP = 0.4
 
-HIDER_SEEKER_DETECTION_RANGE = 2.0
+HIDER_SEEKER_DETECTION_RANGE = 8.0
 
 # Mode-dependent goal gains. Roam stays moderate because velocity feedforward
 # absorbs most tracking demand; hide is aggressive so the drone saturates at
@@ -63,7 +63,8 @@ def _lissajous_freqs_phases(robot_no):
     """Per-drone (omega, phase) triples. Single source of truth for the path."""
     omega_x = 0.16 + 0.018 * (robot_no - 1)
     omega_y = 0.11 + 0.015 * (robot_no - 1)
-    omega_z = 0.09 + 0.013 * (robot_no - 1)
+    #omega_z = 0.09 + 0.013 * (robot_no - 1)
+    omega_z = 0.0
     phase_x = (robot_no - 1) * (2.0 * math.pi / 3.0)
     phase_y = (robot_no - 1) * (2.0 * math.pi / 5.0)
     phase_z = (robot_no - 1) * (2.0 * math.pi / 7.0)

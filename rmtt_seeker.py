@@ -20,7 +20,7 @@ _CENTER_Y = 0.0
 _CENTER_Z = 1.0
 _AMP_X = 1.8
 _AMP_Y = 3.5
-_AMP_Z = 0.4
+_AMP_Z = 0.0
 _OMEGA_X = 0.18                 # ~35 s / cycle
 _OMEGA_Y = 0.13                 # ~48 s
 _OMEGA_Z = 0.08                 # ~79 s
@@ -37,7 +37,10 @@ _R_SAFE = 0.6
 _K_OBS = 2.0
 _K_BARRIER = 0.5
 
-# Cruise speeds (tuned post-voliere test).
+# --- Cruise speeds -------------------------------------------------------
+# Deliberately slower than the hider cap (0.55 in cf2_milestone1) so the
+# hiders can outrun the seeker once spotted -- the game was unwinnable for
+# the hiders when the seeker was the faster agent.
 _VMAX_XY = 0.6
 _VMAX_Z = 0.6
 _GOAL_GAIN = 0.8
@@ -59,7 +62,7 @@ def seeker_heading(current_pose, t):
     tx, ty, tz = _seeker_target(t)
     dx = tx - px
     dy = ty - py
-    dz = tz - pz
+    dz = 0.0
     norm = math.sqrt(dx * dx + dy * dy + dz * dz)
     if norm < 1e-6:
         return 1.0, 0.0, 0.
