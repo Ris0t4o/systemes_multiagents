@@ -22,13 +22,13 @@ nbRMTT = 1
 # Seeker spawns mid-arena, on the -x side, between the two obstacles. Sits
 RMTT_pose = [[1.5, 1.0, 0.0]]  # x, y, z
 
-nbCF2 = 1
+nbCF2 = 4
 # Hiders spawn at the four corners of an inset rectangle (x = +/-1.8 m,
-
-CF2_pose = [[-1.8, -3.8, 0.0], 
-            #[0.8, -3.8, 0.0],
-            #[-1.8, +2.8, 0.0], [+1.8, +3.8, 0.0]
-            ]  # x, y, z
+# y = +/-3.8 m) so each room of the arena starts with two hiders.
+CF2_pose = [[-1.8, -3.8, 0.0],
+            [+1.8, -3.8, 0.0],
+            [-1.8, +3.8, 0.0],
+            [+1.8, +3.8, 0.0]]  # x, y, z
 
 nbRMEP = 0
 RMEP_pose = [[-1.0, -1.0, 0.0]]  # x, y, theta

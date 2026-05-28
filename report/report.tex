@@ -61,21 +61,29 @@ spot a group of \emph{hider} drones that hide behind obstacles. The system is
 built on top of the CentraleSup\'elec Vol\`iere TP framework: every drone
 controller is a Python function that the simulator (\code{standalone\_sim.py})
 calls each tick with the current world state, and must return a velocity
-command. The contribution of this work lies in the modules around
-\code{tp\_algos.py}: an obstacle-consensus law with both an asymptotic linear
-term and a barrier term; an inter-agent dispersion consensus law (gradient
-flow on the swarm potential $V = (k/2)\sum_{i\neq j} 1/\|p_i-p_j\|$) that
-maximizes pairwise distances among the hiders; a 3D field-of-view sensor; a
-shared-memory broadcast channel between hiders; a decentralized
-\emph{cover-assignment} primitive that solves a min-cost matching so each
-hider takes a distinct cover face behind an obstacle relative to the last-known
-seeker pose; and a controller-level 3D inter-drone repulsion that lives inside
-\code{tp\_algos.py} itself and adds a hard ``never closer than 1\,m'' fence on
-top of the per-controller behaviours. The overall control law combines a
-weakened Lissajous exploration drift, a consensus-based obstacle push, the
-inter-agent dispersion consensus, a top-level 3D drone-to-drone separation,
-and soft boundary repulsion, with a single magnitude saturation at the
-actuator limit.
+command. The contribution lives in the modules around \code{tp\_algos.py}:
+(i) an obstacle-consensus law with both an asymptotic linear term and a
+barrier term, used by hiders and seeker alike; (ii) a Coulomb-form
+inter-agent dispersion consensus on the swarm potential
+$V = (k/2)\sum_{i \ne j} 1/\|p_i-p_j\|$ that the hiders descend collectively;
+(iii) a forward field-of-view sensor with a single \code{hider\_view\_heading}
+function that drives \emph{both} the catch predicate and the rendered cone,
+so a hider can never be seen if its on-screen cone does not also see the
+seeker; (iv) a shared-memory broadcast channel between hiders; (v) a
+\emph{cover-assignment} primitive that solves a deterministic min-cost
+matching so each hider takes a distinct cover face relative to the
+last-known seeker pose, with a 1\,s / 0.5\,m hysteresis cache that prevents
+role-swap chatter; and (vi) a controller-level 3D inter-drone repulsion in
+\code{tp\_algos.py} that adds a hard ``never closer than 1\,m'' fence on top
+of the per-controller behaviours. The hider mixes a moderate-gain Lissajous
+roam (with analytic velocity feed-forward), the obstacle consensus, the
+dispersion consensus, the 3D drone fence, and a soft boundary repulsion;
+when an alert is fresh the goal target switches to the assigned cover face
+and the gain is raised so the hider actually \emph{reaches} the face before
+the seeker. The seeker uses the same obstacle consensus plus a stronger
+\emph{soft boundary repulsion} of its own (added because the seeker has no
+dispersion term pulling it inward), and lands once the referee reports all
+hiders caught.
 \end{abstract}
 
 \tableofcontents
@@ -115,15 +123,19 @@ The code base is split into small files that each address one concern:
 \midrule
 \code{standalone\_sim.py} & The simulator. Owns the world state, calls each
 robot's controller in a thread pool, integrates kinematics, detects
-collisions, renders the 3D figure. \emph{Untouched in this project.} \\
+collisions, renders the 3D figure. The only edit in this work is the
+spawn-list block (4 hiders, 3 obstacles); everything else is upstream. \\
 \code{tp\_algos.py} & The required entry-point file (prof requirement). Beyond
 the dispatch shims, it hosts a controller-level 3D inter-drone repulsion
 (\code{\_compute\_drone\_repulsion\_3d}) and applies it on top of both the
 seeker and hider commands. \emph{Edits kept inside the marked
 \code{TO BE MODIFIED} blocks.} \\
-\code{cf2\_milestone1.py} & Top-level hider controller: composes a goal force,
-obstacle consensus, inter-agent dispersion consensus, and boundary repulsion;
-switches between roaming and cover-assignment hide mode. \\
+\code{cf2\_milestone1.py} & Top-level hider controller: composes a goal force
+(roam or hide, with analytic Lissajous feed-forward in roam), obstacle
+consensus, Coulomb dispersion consensus, and boundary repulsion; switches
+modes on the shared seeker-sighting channel. Also exports
+\code{hider\_view\_heading}, the single source of truth for the FoV axis
+used by both the catch predicate and the rendered cone. \\
 \code{cf2\_sensing.py} & The hider's sensing primitives: intent heading and
 FoV-cone obstacle sensing on an axis-aligned bounding box (AABB) model. \\
 \code{cf2\_consensus.py} & Two consensus laws: the obstacle push (linear +
@@ -162,28 +174,47 @@ At each tick $t = k\,\Delta t$ ($\Delta t = 0.05\,\text{s}$), the simulator:
 
 \paragraph{Default scenario.}
 The simulator ships with \code{nbRMTT = 1} seeker, \code{nbCF2 = 4} hiders,
-and \code{nbObstacle = 2}: a $1.0 \times 0.5 \times 2.5$\,m pillar at
-$(-0.5, 1.5, 0)$ and a $0.5 \times 1.1 \times 2.5$\,m pillar at $(0.8, -2.0,
-0)$. The two pillars sit in opposing ``rooms'' of the arena (positive vs.\
-negative $y$), keep at least $1.4$\,m of clearance from every wall (well above
-$r_\mathrm{safe} = 0.6$\,m), and are $\sim 3.7$\,m apart center-to-center.
-With four hiders the swarm has roughly enough room to occupy one distinct
-cover face per drone (the two AABBs jointly expose up to eight far-side
-faces depending on seeker position), which is precisely what the
-cover-assignment law in Sec.~\ref{sec:cover} exploits. The RMTT starts at
-$(-1.5,\,0,\,0)$ -- mid-arena on the $-x$ side, between the two obstacles --
-and is forced into takeoff at $t = 0$. The four CF2 hiders start at the
-corners of an inset rectangle, $(\pm 1.8,\,\pm 3.8,\,0)$, and take off once
-their controllers request it. The corner layout was chosen to satisfy four
+and \code{nbObstacle = 3} (Fig.~\ref{fig:arena_overview}):
+\begin{itemize}[leftmargin=1.4em,topsep=2pt]
+  \item A $1.0 \times 0.5 \times 2.5$\,m pillar at $(-0.5, 1.5, 0)$.
+  \item A $0.5 \times 1.1 \times 2.5$\,m pillar at $(0.8, -2.0, 0)$.
+  \item A $3.0 \times 1.0 \times 2.5$\,m \emph{central slab} at $(0, 0, 0)$
+        which splits the arena into a north room ($y > 0.5$) and a south
+        room ($y < -0.5$) and reduces direct sight-lines between them.
+\end{itemize}
+The two side pillars occupy opposite rooms; together with the slab they
+expose, depending on the seeker pose, up to $3 \cdot 4 = 12$ axis-aligned
+candidate cover faces -- the four cardinal normals of each box, kept only
+when the outward normal points away from the seeker, see
+Sec.~\ref{sec:cover}. With four hiders this is overdetermined in most
+configurations and the cover-assignment law has slack to spread the swarm
+across both rooms. The seeker spawns at $(1.5,\,1.0,\,0)$, just north of
+the central slab and just east of the small north pillar; this is its
+worst-case spawn because the slab puts the south-room hiders out of
+line-of-sight immediately. The four CF2 hiders start at the corners of an
+inset rectangle, $(\pm 1.8, \pm 3.8, 0)$. The corner layout satisfies four
 simultaneous constraints at $t = 0$: pairwise hider spacing $\ge 3.6$\,m
 (well above the 1\,m hard floor of Sec.~\ref{sec:tp-shim}), seeker-to-hider
-distance $\ge 3.82$\,m (outside the seeker's 3.5\,m vision range, so no
-hider is in the seeker's cone at spawn), wall clearance $\ge 0.7$\,m (outside
-the 0.6\,m boundary repulsion margin), and obstacle clearance $\ge 1.35$\,m
-(well above $r_\mathrm{safe} = 0.6$\,m). Each room of the arena -- positive
-and negative $y$ -- starts with two hiders, so the cover-assignment law
+distance $\ge 2.82$\,m (outside the seeker's $2.0$\,m vision range, so no
+hider is in the seeker's cone at spawn -- and the seeker takes off in
+state 1 for $3$\,s before catch detection is even active), wall clearance
+$\ge 0.7$\,m (outside the 0.6\,m boundary repulsion margin), and obstacle
+clearance $\ge 1.05$\,m from every box (well above
+$r_\mathrm{safe} = 0.6$\,m). Each
+room of the arena starts with two hiders, so the cover-assignment law
 always has candidates on both sides regardless of where the seeker's sweep
 takes it first.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\linewidth]{figures/fig_arena_overview.png}
+  \caption{Default scenario at $t = 0$. Seeker (orange triangle) at
+  $(1.5, 1.0, 0)$; four hiders (green stars) at $(\pm 1.8, \pm 3.8, 0)$;
+  three AABB obstacles in dark grey. The central slab is the dominant
+  occluder along the $y$ axis and is what makes the south-room hiders
+  invisible to the seeker at spawn.}
+  \label{fig:arena_overview}
+\end{figure}
 
 % ============================================================
 \section{Mathematical model}
@@ -236,23 +267,47 @@ The controller assembles four terms:
         + \vect{F}_\mathrm{bnd},
 \]
 and outputs the planar component of $\vect{F}_\mathrm{total}$ after a
-magnitude saturation at $v_\mathrm{max} = 0.45\,\text{m/s}$ (chosen below the
-hardware cap $\text{MAX\_V\_CF2} = 0.6\,\text{m/s}$ to leave headroom for the
-vertical channel inside the simulator's 3D clamp).
+magnitude saturation at $v_\mathrm{max} = 0.55\,\text{m/s}$ (just below the
+hardware cap $\text{MAX\_V\_CF2} = 0.6\,\text{m/s}$). The vertical channel
+is governed separately: the controller returns a desired altitude
+$z_\mathrm{dist}$ that the simulator converts to $v_z = z_\mathrm{dist} - z$
+and then clamps with $(v_x, v_y, v_z)$ \emph{together} at
+$\text{MAX\_V\_CF2}$. To stop a large $v_z$ from eating the xy avoidance
+budget inside that 3D clamp, the controller applies a per-call rate limit
+\code{\_Z\_RATE\_LIMIT = 0.01}\,m on $|z_\mathrm{dist} - z|$ before
+returning. The result: the xy channel keeps its full $0.55$\,m/s magnitude
+even during a vertical excursion, the obstacle barrier of
+Sec.~\ref{sec:consensus} stays fully effective, and the drone climbs or
+descends at most $0.2$\,m/s.
 
-\subsubsection*{Goal attraction}
+\subsubsection*{Goal attraction (mode-dependent)}
+The goal target is the Lissajous waypoint $\vect{p}_\mathrm{lis}$ in roam
+mode and the assigned cover face $\vect{c}_i$ in hide mode
+(Sec.~\ref{sec:cover}). The two modes use \emph{different} gain laws:
 \[
-    \vect{F}_\mathrm{goal} \;=\; k_g \,(\vect{p}_\mathrm{goal} - \vect{p}),
-    \qquad k_g = 0.15.
+    \vect{F}_\mathrm{goal}^\mathrm{roam}
+    \;=\; k_g^\mathrm{roam}\,(\vect{p}_\mathrm{lis} - \vect{p})
+       + \dot{\vect{p}}_\mathrm{lis},
+    \qquad k_g^\mathrm{roam} = 0.45,
 \]
-The goal is either the drone's Lissajous waypoint (Sec.~\ref{sec:lissajous})
-or its assigned cover target (Sec.~\ref{sec:cover}), depending on whether
-the swarm is in roaming or hide mode. The small gain ($0.15$, down from an
-earlier $0.65$) is deliberate: in roam mode it turns the Lissajous into a
-\emph{slow exploration drift}, so the inter-agent dispersion consensus below
-becomes the dominant driver and the swarm does not freeze at a fixed orbit
-the seeker can memorize; in hide mode the same small gain keeps the cover
-attraction from overwhelming the obstacle barrier near the cover face.
+\[
+    \vect{F}_\mathrm{goal}^\mathrm{hide}
+    \;=\; k_g^\mathrm{hide}\,(\vect{c}_i - \vect{p}),
+    \qquad k_g^\mathrm{hide} = 0.9.
+\]
+The analytic velocity feed-forward $\dot{\vect{p}}_\mathrm{lis}$ is the
+exact time derivative of the Lissajous waypoint, returned by
+\code{\_lissajous\_velocity} in \code{cf2\_milestone1.py:83-89}. With the
+feed-forward in place, $k_g^\mathrm{roam}$ only has to correct
+\emph{tracking error}, not produce the entire chase velocity; this lets it
+stay moderate, so a small obstacle excursion or a dispersion push easily
+deflects the drone off-path. The cover target is stationary
+($\dot{\vect{c}}_i = 0$), so the feed-forward is dropped. The hide gain is
+the highest in the controller because the drone must \emph{actually reach}
+the assigned face inside the seeker-memory TTL: at $0.9 \times 0.6\,\text{m}
+\approx v_\mathrm{max}$ the planar saturation engages whenever the hider
+is more than $\sim 0.6$\,m from cover, so the hide command is essentially
+``go full speed straight to the face''.
 
 \subsubsection*{Obstacle consensus}
 Each sensed obstacle $j$ contributes (see Sec.~\ref{sec:consensus})
@@ -308,11 +363,11 @@ hard bounce.
 
 Each hider $i$ tracks a 3D Lissajous waypoint
 \[
-    \vect{p}_\mathrm{goal}^{(i)}(t)
+    \vect{p}_\mathrm{lis}^{(i)}(t')
     \;=\;
     \begin{pmatrix}
-        c_x + A_x \sin(\omega_x^{(i)} t + \varphi_x^{(i)}) \\
-        c_y + A_y \sin(\omega_y^{(i)} t + \varphi_y^{(i)}) \\
+        c_x + A_x \sin(\omega_x^{(i)} t' + \varphi_x^{(i)}) \\
+        c_y + A_y \sin(\omega_y^{(i)} t' + \varphi_y^{(i)}) \\
         c_z
     \end{pmatrix},
 \]
@@ -320,50 +375,106 @@ with $A_x = 1.6$, $A_y = 3.0$, $c_z = 1.0$, and per-axis, per-drone angular
 frequencies
 \[
 \omega_x^{(i)} = 0.16 + 0.018\,(i-1),\quad
-\omega_y^{(i)} = 0.11 + 0.015\,(i-1),\quad
-\omega_z^{(i)} = 0.09 + 0.013\,(i-1)\ \text{rad/s},
+\omega_y^{(i)} = 0.11 + 0.015\,(i-1)\ \text{rad/s},
 \]
 and coprime phase offsets
 $\varphi^{(i)}_x = (i-1)\cdot 2\pi/3$,
-$\varphi^{(i)}_y = (i-1)\cdot 2\pi/5$,
-$\varphi^{(i)}_z = (i-1)\cdot 2\pi/7$.
-The three axes use different base frequencies (not a single $0.16 + 0.018(i-1)$)
-so a single drone alone already traces a non-degenerate Lissajous, and the
-small per-drone increments stop the swarm from collapsing onto a shared orbit.
+$\varphi^{(i)}_y = (i-1)\cdot 2\pi/5$.
+The two axes use different base frequencies so a single drone alone already
+traces a non-degenerate Lissajous, and the small per-drone increments stop
+the swarm from collapsing onto a shared orbit
+(Fig.~\ref{fig:lissajous_footprint}).
 
-\paragraph{Two intentionally different ``Lissajous targets''.}
-There are \emph{two} versions of the Lissajous formula in the code base, and
-they differ on purpose:
-\begin{itemize}[leftmargin=1.4em]
-  \item \code{cf2\_milestone1.\_lissajous\_target} (used as the position
-        goal for \code{F}$_\mathrm{goal}$) returns $t_z = c_z$, i.e.\ the
-        $A_z \sin(\cdot)$ term is commented out so the drone holds a constant
-        cruise altitude and the on-screen cone stays at a predictable
-        height.
-  \item \code{cf2\_sensing.intent\_heading} (used to build the FoV-cone
-        \emph{axis}) returns $t_z = c_z + A_z\sin(\omega_z^{(i)} t +
-        \varphi_z^{(i)})$, $A_z = 0.5$, so the cone gets a gentle vertical
-        sweep -- handy if the seeker is at a slightly different altitude.
+\paragraph{Per-drone phase offset (no spawn lurch).}
+The time argument is $t' = t + \tau_i$ where $\tau_i$ is set lazily on the
+first call to the controller: a coarse $0$--$60$\,s search picks the
+$\tau_i$ for which $\vect{p}_\mathrm{lis}^{(i)}(\tau_i)$ is closest to the
+drone's spawn pose
+(\code{cf2\_milestone1.\_ensure\_t\_offset}, lines 97--114). Without
+this, the drone would face a $\sim 3$\,m initial error at $t = 0$ and the
+analytic feed-forward $\dot{\vect{p}}_\mathrm{lis}$ would have nothing
+useful to feed forward into: the result was a violent spawn lurch followed
+by a corner-cutting transient that often clipped an obstacle.
+
+\paragraph{Z scaffolding present but disabled.}
+The code base carries a complete $z$ branch -- amplitude $A_z = 0.5$,
+frequency $\omega_z^{(i)} = 0.09 + 0.013(i-1)$, phase
+$\varphi_z^{(i)} = (i-1)\cdot 2\pi/7$, and a $z$-component in the FoV axis --
+but every $z$-coupled line is currently commented out. Specifically:
+\begin{itemize}[leftmargin=1.4em,topsep=2pt]
+  \item \code{cf2\_milestone1.\_lissajous\_target} returns
+        $t_z = c_z$ (the $A_z\sin(\omega_z t)$ term is commented).
+  \item \code{cf2\_milestone1.\_lissajous\_freqs\_phases} overrides
+        $\omega_z = 0$ (line 67).
+  \item \code{cf2\_sensing.intent\_heading} sets $dz = 0$
+        (line 38), making the unit-vector cone axis a 2D heading.
+  \item \code{cf2\_sensing.sense\_obstacles} sets $dz = 0$
+        in the closest-point delta (line 88), so the cone test is purely
+        in the $xy$ plane.
 \end{itemize}
-Position tracking is altitude-locked, but \emph{sensing} is not, which keeps
-detection ranges 3D without forcing the controller to chase $z$.
+The state was introduced by the commits \code{0f19e8f} / \code{7fcbcc0}
+(\textit{``modif de vitesses z''}). The reason is the actuator clamp: the
+simulator clamps the 3D vector $(v_x, v_y, v_z)$ at $\text{MAX\_V\_CF2}$
+\emph{together}, and the per-step position noise on $z$ ($\sigma = 5$\,mm)
+together with the 3D drone fence in $z$ would on bad ticks force $v_z$ up
+near MAX\_V, eating the $xy$ avoidance budget and breaking the discrete-time
+non-penetration argument of Sec.~\ref{sec:tp-shim}. Re-enabling Z is a
+one-line uncomment in each location once $v_z$ is given its own private
+saturation; this is in the Future Work list.
 
 \subsection{Mode switching: roam vs.\ hide}
 
 The hiders communicate seeker sightings through a single module-level dict in
 \code{cf2\_hider.py}. The mode logic in \code{compute\_roaming\_cmd} is:
 \begin{enumerate}[leftmargin=1.4em]
-  \item Compute the FoV-based seeker detection: if \code{can\_see(self,
-        seeker, intent\_heading, FOV\_HALF\_ANGLE = 60$^\circ$, range = 3.0\,m)},
-        call \code{report\_seeker\_sighting(seeker\_pos, t)}.
+  \item Compute the FoV-based seeker detection. The hider's forward cone
+        has half-angle
+        $\theta_\mathrm{fov}^\mathrm{hider} = 45^\circ$ (down from the
+        usual $60^\circ$: a narrower cone gives fewer false alerts on a
+        seeker that is nearby but not actually aimed at the hider, which
+        would otherwise lock the swarm into hide mode for the full 5\,s TTL
+        even when the threat has moved on) and range $3.0$\,m. If
+        \code{can\_see(self, seeker, hider\_view\_heading,
+        $\theta_\mathrm{fov}^\mathrm{hider}$, $3.0$\,m)}, call
+        \code{report\_seeker\_sighting(seeker\_pos, t)}.
   \item Read the shared memory via \code{get\_last\_seen(t)}. If a sighting
         is fresher than $\text{TTL} = 5\,\text{s}$, switch the goal target
-        to the cover point (next section); otherwise, use the Lissajous
-        target.
+        to the assigned cover point (next section); otherwise, use the
+        Lissajous target. Roam-mode visualization is shown in
+        Fig.~\ref{fig:roam_dispersion}.
 \end{enumerate}
 The structural asymmetry is important: the seeker controller never reads or
 writes the shared memory, so ``hiders can talk to each other but the seeker
 can't listen'' is enforced by interface, not by convention.
+
+\paragraph{One heading function for both vision and rendering.}
+The FoV axis is computed by \code{hider\_view\_heading} in
+\code{cf2\_milestone1.py:143-148}. That function calls
+\code{intent\_heading} after composing the per-drone phase offset
+$\tau_i$ described above, so the cone axis always corresponds to the
+direction the drone is actually trying to go. Both \code{can\_see} (called
+from inside \code{compute\_roaming\_cmd}) \emph{and} the rendered cone in
+\code{sim\_viz.update} read this exact function. The architectural
+consequence is that an alert is impossible without a corresponding
+on-screen cone hit -- the visualization cannot lie about what the controller
+saw. This was a deliberate refactor (commit \code{45685af}); previously the
+on-screen cone was rebuilt from a duplicated copy of the Lissajous
+formulas in \code{sim\_viz} that did not carry $\tau_i$, so the rendered
+cone and the actual sighting cone drifted apart over the first few seconds
+of every run.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.80\linewidth]{figures/fig_roam_dispersion.png}
+  \caption{Roam mode at $t = 25$\,s. With the seeker parked out of vision
+  range, the swarm sits in its Coulomb-dispersion equilibrium inside the
+  arena: hiders are pushed apart by $-\nabla V_\mathrm{disp}$, the boundary
+  repulsion stops them from sticking to the walls, and the analytic
+  Lissajous feed-forward keeps every hider drifting along its own quasi-orbit
+  rather than freezing at a fixed point. Cones omitted to declutter the
+  swarm geometry.}
+  \label{fig:roam_dispersion}
+\end{figure}
 
 \subsection{Cover-assignment geometry (multi-agent)}
 \label{sec:cover}
@@ -371,8 +482,9 @@ can't listen'' is enforced by interface, not by convention.
 Hide mode is a small \emph{cooperative task-allocation} problem: there are
 several cover spots and several hiders, and the swarm wants every hider on a
 distinct spot so the seeker cannot harvest them in one cone sweep. The
-solution lives in \code{cf2\_hider.assign\_cover\_targets} and runs in three
-steps.
+solution lives in \code{cf2\_hider.assign\_cover\_targets} and runs in four
+steps; the result is visualised in
+Fig.~\ref{fig:hide_assignment} and Fig.~\ref{fig:hide_assignment_topdown}.
 
 \paragraph{1. Candidate enumeration.}
 For every obstacle (center $\vect{o}_j$, half-extents $(h_x, h_y)$) and every
@@ -386,7 +498,9 @@ AABB face with outward normal $\hat{\vect{n}} \in \{\pm\hat{\vect{e}}_x,
 where $\vect{h} = (h_x, h_y)$. The face is \emph{kept} only if
 $\hat{\vect{n}} \cdot (\vect{o}_j - \vect{s}) > 0$, i.e.\ the normal points
 away from the seeker -- only those faces actually occlude line of sight to
-the cover point. With two obstacles this yields up to eight candidates. The
+the cover point. With the three obstacles of the default scenario, $3
+\times 4 = 12$ candidates are generated before filtering; in a typical
+seeker pose roughly half survive the directional gate. The
 $d_\mathrm{cov} > r_\mathrm{safe}$ inequality is deliberate: the candidate
 sits \emph{outside} the obstacle-consensus push zone, so a hider can come to
 rest on it without fighting the avoidance law.
@@ -401,30 +515,70 @@ avoids $N \cdot M$ square roots.
 
 \paragraph{3. Min-cost injective assignment.}
 Find $\pi : \{1,\dots,N\} \to \{1,\dots,M\}$ injective minimizing $\sum_i
-C_{i,\pi(i)}$. For the default scenario $(N, M) \le (4, 8)$ the search space
-is $P(M, N) \le 1680$ permutations, so a branch-and-bound brute force is
+C_{i,\pi(i)}$. For the default scenario $(N, M) \le (4, 12)$ the search space
+is $P(M, N) \le 11{,}880$ permutations, so a branch-and-bound brute force is
 faster and dependency-free compared to importing SciPy's
 \code{linear\_sum\_assignment}. The implementation prunes any partial
-assignment whose accumulated cost already exceeds the best complete one.
+assignment whose accumulated cost already exceeds the best complete one
+(\code{cf2\_hider.\_best\_assignment}).
+
+\paragraph{4. Hysteresis cache.}
+The matching is \emph{not} recomputed every tick. A small cache
+(\code{\_cover\_assignment\_cache}) stores the last solved assignment and
+re-uses it as long as both of these hold:
+\begin{itemize}[leftmargin=1.4em,topsep=2pt]
+  \item \code{age} = $t - t_\mathrm{cache} < \code{\_COVER\_CACHE\_MAX\_AGE}
+        = 1.0$\,s, and
+  \item the seeker has moved less than
+        \code{\_COVER\_CACHE\_SEEKER\_DELTA} $= 0.5$\,m since the cache was
+        built.
+\end{itemize}
+Without this gate the cost matrix would shift slightly every tick on
+position noise alone, occasionally swapping two hiders' assigned faces
+when their costs cross -- a role swap that does not change the steady-state
+formation but does send the affected pair on a wasted round-trip in the
+meantime. The cache also drops the effective matching frequency from
+$20$\,Hz to $\sim 1$\,Hz, which would matter on real flight hardware.
 
 \paragraph{Decentralization.}
 The simulator hands every hider the same \code{cf2\_poses} matrix and the
 same shared seeker sighting; \code{assign\_cover\_targets} is deterministic
-in those inputs. So every hider independently computes the \emph{same}
-matching and reads its own row from the result -- a consensus reached by
-``every node solves the same optimization'' rather than by message
-exchange. No explicit communication is needed beyond the existing
-shared-memory sighting channel.
+in those inputs and so is the cache. Every hider independently computes the
+\emph{same} matching and reads its own row from the result -- a consensus
+reached by ``every node solves the same optimization on the same inputs''
+rather than by message exchange. No explicit communication is needed beyond
+the existing shared-memory sighting channel.
 
 \paragraph{Fallback.}
-If $M < N$ (one obstacle, or the seeker hides most far-side faces), the
-$N - M$ leftover hiders fan out radially around the seeker at distance
-$1.5\,\text{m}$ on angles $2\pi k / (N - M)$. They no longer get a true
-occlusion but they no longer pile up either, and the dispersion consensus
-keeps pushing them apart in the meantime. The single-target
-\code{seek\_cover\_target} function (older nearest-cover-only behaviour) is
-kept exported for backward compatibility and tests, but is no longer on the
-hot path.
+If $M < N$ (the seeker hides most far-side faces), the $N - M$ leftover
+hiders fan out radially around the seeker at distance $1.5\,\text{m}$ on
+angles $2\pi k / (N - M)$. They no longer get a true occlusion but they no
+longer pile up either, and the dispersion consensus keeps pushing them
+apart in the meantime. The single-target \code{seek\_cover\_target}
+function (older nearest-cover-only behaviour) is kept exported for
+backward compatibility and tests, but is no longer on the hot path.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.78\linewidth]{figures/fig_hide_assignment.png}
+  \caption{Hide mode (oblique 3D). The seeker has just emitted a sighting
+  from $(0, -4, 0.8)$ (south wall, ahead of obstacle 2). The four hiders'
+  cones switch to gold (alert), each hider has been assigned a distinct
+  far-side cover face, and the swarm converges within $\sim 3$\,s
+  (well inside the 5\,s TTL).}
+  \label{fig:hide_assignment}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.62\linewidth]{figures/fig_hide_assignment_topdown.png}
+  \caption{Same hide-mode instant viewed from straight above. Top-down makes
+  the cover-face geometry unambiguous: each hider sits behind one obstacle
+  face whose outward normal points \emph{away} from the seeker's south-side
+  sighting, and no two hiders share a face -- the visual signature of the
+  injective min-cost matching.}
+  \label{fig:hide_assignment_topdown}
+\end{figure}
 
 % ============================================================
 \section{Consensus laws (\code{cf2\_consensus.py})}
@@ -481,6 +635,28 @@ The denominator uses $\max(d_j, \varepsilon)$ with
 $\varepsilon = 0.02\,r_\mathrm{safe} = 12\,\text{mm}$. In simulation a drone may
 briefly penetrate an obstacle due to the discrete integration step; this clamp
 keeps the law finite while still producing a very large push.
+Fig.~\ref{fig:barrier_curves} (left) shows the linear and barrier
+components plotted side by side: the linear term carries all of the
+restoring force at moderate violations while the barrier dominates as
+$d \to 0$, exactly the property the controller relies on to remain
+bounded under any bounded goal attraction.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.97\linewidth]{figures/fig_barrier_curves.png}
+  \caption{Left: obstacle consensus magnitude vs.\ distance to the obstacle
+  surface, decomposed into the linear term $k_\mathrm{obs}(r_\mathrm{safe}
+  - d)$ and the barrier term $k_\mathrm{bar}(r_\mathrm{safe}/d - 1)$. The
+  numerical clamp at $\varepsilon = 0.02\,r_\mathrm{safe}$ caps the barrier
+  at $\sim 25$\,m/s pre-saturation. Right: inter-drone 3D barrier
+  magnitude vs.\ pairwise distance over the active band
+  $[d_\mathrm{min}, d_\mathrm{act}]$. The shaded strip is the per-tick
+  closure budget $2 v_\mathrm{max} \Delta t = 0.06$\,m -- the barrier is
+  already in the hundreds of m/s by the time a relative-closure step could
+  cross it, which underwrites the discrete-time invariance argument of
+  Sec.~\ref{sec:tp-shim}.}
+  \label{fig:barrier_curves}
+\end{figure}
 
 \subsection{Inter-agent dispersion consensus}
 \label{sec:disp-consensus}
@@ -547,6 +723,32 @@ extra messaging. In a real deployment the assumed information flow is
 frequency''. The shared-memory channel already exists for seeker sightings
 (Sec.~\ref{sec:cover}) and would extend trivially to position broadcasts.
 
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.62\linewidth]{figures/fig_dispersion_field.png}
+  \caption{Dispersion field $-\nabla_{\vect{p}_i} V_\mathrm{disp}$ for a
+  probe hider at every grid point, with three other hiders held fixed at
+  the marked positions. Arrow direction shows the per-tick velocity
+  command; colour shows its $\log_{10}$ magnitude. The field is radial-out
+  from each fixed neighbour and never goes silent at any distance, which
+  is exactly the property a short-range repulsion would lack.}
+  \label{fig:dispersion_field}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.55\linewidth]{figures/fig_lissajous_footprint.png}
+  \caption{Lissajous footprints over $120$\,s ($xy$ projection). Each
+  hider's path uses its individual frequency/phase offsets and the lazy
+  initial-phase offset $\tau_i$ described in Sec.~\ref{sec:lissajous}; the
+  spawns (stars) lie on each curve by construction. The seeker's
+  slow figure-of-eight is drawn in orange. The three obstacle footprints
+  are overlaid in grey -- note that the Lissajous orbits cross the obstacle
+  AABBs, which is why the obstacle consensus must remain active even when
+  the goal is supposedly on the safe side.}
+  \label{fig:lissajous_footprint}
+\end{figure}
+
 % ============================================================
 \section{Sensing (\code{cf2\_sensing.py})}
 % ============================================================
@@ -558,12 +760,18 @@ toward the current Lissajous target:
 \[
     \hat{\vect{h}}(t)
     \;=\;
-    \frac{\vect{p}_\mathrm{goal}(t) - \vect{p}(t)}{\|\vect{p}_\mathrm{goal}(t) - \vect{p}(t)\|}.
+    \frac{\vect{p}_\mathrm{lis}(t) - \vect{p}(t)}{\|\vect{p}_\mathrm{lis}(t) - \vect{p}(t)\|},
+    \qquad \text{with}\ dz \mathrel{\!:=\!} 0
+    \ \text{forced before normalization.}
 \]
-Compared to a path-tangent heading $\dot{\vect{p}}_\mathrm{goal}/\|\dot{\vect{p}}_\mathrm{goal}\|$,
-this points where the drone wants to be rather than where the path is
-currently moving. The practical consequence: when an obstacle is between the
-drone and its waypoint, the cone is already aimed at the obstacle.
+Compared to a path-tangent heading
+$\dot{\vect{p}}_\mathrm{lis}/\|\dot{\vect{p}}_\mathrm{lis}\|$, this points
+where the drone wants to be rather than where the path is currently
+moving. The practical consequence: when an obstacle is between the drone
+and its waypoint, the cone is already aimed at the obstacle. The forced
+$dz = 0$ (\code{cf2\_sensing.py:38}) is part of the disabled-Z policy of
+Sec.~\ref{sec:lissajous}: the heading is a unit vector in the $xy$ plane,
+and so the rendered cone is a 2D wedge embedded in 3-space.
 
 \subsection{FoV-cone obstacle sensing}
 
@@ -587,9 +795,25 @@ the inverse of its heading.
 \paragraph{Why hiders sense omnidirectionally.}
 The hider controller passes $\theta_\mathrm{fov} = \pi$ to
 \code{sense\_obstacles}, effectively disabling the angular gate. The forward
-$60^\circ$ cone is reserved for \emph{seeker detection}, not obstacle
+$45^\circ$ cone is reserved for \emph{seeker detection}, not obstacle
 avoidance, since otherwise a hider would be free to enter an obstacle from a
-blind side.
+blind side. Like the heading, the obstacle-cone test forces $dz = 0$ in the
+delta to the closest box point (\code{cf2\_sensing.py:88}); since the cone
+test is omnidirectional for the hider this is moot in practice, but the
+same code path is reused (with a real cone) by the seeker -- a small bit of
+asymmetry that should be tightened up if Z is re-enabled.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.85\linewidth]{figures/fig_fov_geometry.png}
+  \caption{Geometry of \code{can\_see} (\code{rmtt\_seeker.py:153}). The
+  predicate is true iff the target lies inside the cone (range and
+  angular gates both pass) \emph{and} the segment from apex to target
+  intersects no AABB obstacle. The Kay--Kajiya slab algorithm
+  (\code{\_segment\_intersects\_aabb}) performs the per-axis interval
+  intersection that decides occlusion.}
+  \label{fig:fov_geometry}
+\end{figure}
 
 % ============================================================
 \section{Seeker controller (\code{rmtt\_seeker.py})}
@@ -604,33 +828,75 @@ The seeker tracks a slow Lissajous sweep:
         c_z^S + A_Z^S \sin(\Omega_Z t)
     \end{pmatrix},
 \]
-with $A_X^S = 1.8$, $A_Y^S = 3.5$, $A_Z^S = 0.4$, $c_z^S = 1.0$, and angular
-frequencies $\Omega_X = 0.18$, $\Omega_Y = 0.13$, $\Omega_Z = 0.08$ rad/s
-(cycle times $\approx 35, 48, 79\,\text{s}$). The $\pi/2$ phase between $x$
-and $y$ produces a figure-of-eight footprint that sweeps both ``rooms'' of
-the arena every cycle.
+with $A_X^S = 1.8$, $A_Y^S = 3.5$, $A_Z^S = 0$ (Z disabled, same scaffolding
+story as the hider in Sec.~\ref{sec:lissajous}), $c_z^S = \code{RMTT\_HOVER\_Z}
+= 0.8$\,m, and angular frequencies $\Omega_X = 0.18$, $\Omega_Y = 0.13$,
+$\Omega_Z = 0.08$ rad/s. $\Omega_Z$ is kept for symmetry with the $x, y$
+branch but is multiplied by $A_Z^S = 0$ so produces no motion. Cycle times
+are $\approx 35$ and $48\,\text{s}$. The $\pi/2$ phase between $x$ and $y$
+produces a figure-of-eight footprint that sweeps both ``rooms'' of the arena
+every full cycle (overlaid in Fig.~\ref{fig:lissajous_footprint}).
+
+\paragraph{Why the seeker hovers below the hiders.}
+$c_z^S = 0.8$\,m is intentionally below the hiders' $1.0$\,m cruise. Even
+though the seeker's own heading is computed with $dz = 0$
+(\code{rmtt\_seeker.py:71}), the cone test in \code{can\_see} is fully 3D
+(\code{rmtt\_seeker.py:158}). The $0.2$\,m altitude offset together with the
+$30^\circ$ half-angle means a hider directly overhead is already $11^\circ$
+off-axis -- not a free catch, but a meaningful geometric constraint that
+makes the catch easier when the seeker is closer in $xy$.
 
 \subsection{Control law}
-The seeker uses the same consensus law as the hiders (with the same
-parameters $r_\mathrm{safe} = 0.6$, $k_\mathrm{obs} = 2$, $k_\mathrm{bar} =
-0.5$) plus a goal attraction $\vect{F}_\mathrm{goal}^S = k_g^S (\vect{p}_\mathrm{goal}^S -
-\vect{p})$, $k_g^S = 0.6$. Saturation is applied separately on the planar
-magnitude (at $v_{\max,xy}^S = 0.55$\,m/s) and on the vertical component (at
-$|v_z^S| \le 0.35$\,m/s).
+The seeker uses the same obstacle consensus law as the hiders (with the
+same parameters $r_\mathrm{safe} = 0.6$, $k_\mathrm{obs} = 2$,
+$k_\mathrm{bar} = 0.5$) plus a goal attraction
+$\vect{F}_\mathrm{goal}^S = k_g^S (\vect{p}_\mathrm{goal}^S - \vect{p})$ with
+$k_g^S = 0.8$, and the soft boundary repulsion of Sec.~\ref{sec:seeker-bnd}.
+The xy magnitude is saturated at $v_{\max,xy}^S = 0.6$\,m/s; the vertical
+component is clipped to $|v_z^S| \le 0.6$\,m/s (the same value, so there is
+no separate vertical cap any more) and then the simulator's
+\code{clamp\_vel3d} applies the unified 3D actuator clamp at
+$\text{MAX\_V\_RMTT} = 0.6$\,m/s.
 
 The signature \code{compute\_seeker\_cmd(robot\_no, robot\_pose,
 obstacle\_pose, obstacle\_size, clock)} deliberately does \emph{not} accept
 hider positions: the seeker's \emph{navigation} cannot use any hider state.
 The \code{tp\_algos.rmtt\_control\_fn} wrapper does receive \code{cf2\_poses}
 (its signature is fixed by the TP framework) and uses them \emph{only} to add
-the 3D safety-fence repulsion described in Sec.~\ref{sec:tp-shim} -- it never
-forwards them to \code{compute\_seeker\_cmd}, so the controller's planning
-logic remains hider-blind.
+the 3D safety-fence repulsion of Sec.~\ref{sec:tp-shim} -- it never forwards
+them to \code{compute\_seeker\_cmd}, so the controller's planning logic
+remains hider-blind. The same wrapper is what notices when \code{catch\_count()
+$\ge$ nbCF2} and sets the seeker's \code{trigger\_land} flag, ending the
+game; the seeker controller itself has no game-state input.
+
+\subsection{Soft boundary repulsion}
+\label{sec:seeker-bnd}
+Unlike the hider, the seeker has no inter-agent dispersion term pulling it
+inward, only its goal attraction toward the centred Lissajous target. On
+the slowest axis ($\Omega_Y$) the cycle is $48$\,s and the path swings to
+$|y| = 3.5$\,m near the wall at $|y| = 4.5$; under unmodelled drift this is
+close enough that the simulator's 3D clamp can occasionally graze the
+boundary. The fix (added in commit \code{a68365d}) is a soft $1/d$
+repulsion of the same form as the hider's (Sec.~\ref{sec:lissajous}):
+\[
+    F_\mathrm{bnd}^{S,(w)} \;=\; g_\mathrm{bnd}^S
+    \!\left(\frac{1}{\max(d,10^{-4})} - \frac{1}{m^S}\right),
+    \qquad m^S = 0.6,\ g_\mathrm{bnd}^S = 0.3.
+\]
+The gain $g_\mathrm{bnd}^S = 0.3$ is $3.3\times$ the hider's $0.09$ -- the
+hider's wall push is a gentle nudge that the dispersion can easily
+over-power, while the seeker's wall push has to do the entire restoring
+job on its own.
 
 \subsection{Search cone and line-of-sight}
 
 The search cone has half-angle $\theta_\mathrm{seek} = 30^\circ$ and range
-$3.5$\,m -- narrower but longer than the hiders' cone. The predicate
+$\code{SEEKER\_VISION\_RANGE} = 2.0$\,m -- narrower than the hider's cone,
+and \emph{shorter} (earlier experimental builds with a $3.5$\,m range caught
+every hider within a single sweep; reducing the range to $2.0$\,m is what
+finally made the game winnable for the hiders, because they detect the
+seeker at $3.0$\,m and thus have a $\sim 1$\,m head-start to commit to
+hide mode before they can be tagged). The predicate
 \code{can\_see(apex, target, heading, fov\_half, range, obstacles)} returns
 \code{True} when:
 \begin{enumerate}[leftmargin=1.4em]
@@ -639,6 +905,8 @@ $3.5$\,m -- narrower but longer than the hiders' cone. The predicate
         \ge \cos\theta_\mathrm{fov}\,\|\vect{t} - \vect{a}\|$.
   \item No obstacle box intersects the line segment from apex to target.
 \end{enumerate}
+A concrete catch event captured at simulator level is shown in
+Fig.~\ref{fig:catch_moment}.
 
 The occlusion test uses the standard Kay--Kajiya slab algorithm
 (\code{\_segment\_intersects\_aabb}): for each of the 3 axes, compute the
@@ -646,6 +914,18 @@ parameter interval $[t_1, t_2]$ over which the segment lies between the slab
 faces; intersect the three intervals; the segment hits the box iff the
 intersection overlaps $[0, 1]$. Axis-parallel segments are handled with an
 explicit ``inside the slab?'' check.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.78\linewidth]{figures/fig_catch_moment.png}
+  \caption{Deterministic catch event. The seeker is positioned $1.4$\,m
+  south-east of CF2\_1 with the cone axis forced toward the hider; the
+  Kay--Kajiya occlusion test passes (no AABB intersects the segment);
+  \code{game\_referee.update\_catches} marks the hider on the next tick;
+  and the hider's controller sees \code{is\_caught(1) = True} and switches
+  to \code{trigger\_land = True} (LED red).}
+  \label{fig:catch_moment}
+\end{figure}
 
 % ============================================================
 \section{Inter-hider communication (\code{cf2\_hider.py})}
@@ -689,6 +969,28 @@ hider controller in \code{tp\_algos.cf2\_control\_fn} reads this flag via
 \code{is\_caught(robot\_no)} and returns \code{trigger\_land = True}, which
 puts the drone into landing state.
 
+\paragraph{End-of-game: the seeker lands too.}
+The seeker wrapper in \code{tp\_algos.rmtt\_control\_fn} polls
+\code{catch\_count()} every tick; when it reaches \code{nbCF2} (all hiders
+caught), it short-circuits the call to \code{compute\_seeker\_cmd}, emits
+$(0, 0, 0)$ as the velocity command, and sets \code{trigger\_land = True}
+(lines 275--279). The simulator then drives the seeker through its state-3
+landing transient (linear descent over \code{LANDING\_TIME = 3}\,s, same
+as the takeoff except in reverse) and returns it to idle. The referee's
+\code{\_caught} set persists for the module's lifetime, so re-takeoff in
+the same Python process replays a frozen game state -- a minor wart that
+is flagged in Future Work.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.78\linewidth]{figures/fig_end_game.png}
+  \caption{End of game: \code{catch\_count() = 4/4}. The four hiders have
+  triggered \code{trigger\_land} and are descending or already on the
+  floor; the seeker has entered its own state-3 landing transient and is
+  cruising downward in place. The HUD shows the final state.}
+  \label{fig:end_game}
+\end{figure}
+
 % ============================================================
 \section{Visualization (\code{sim\_viz.py})}
 % ============================================================
@@ -701,7 +1003,13 @@ markers:
         heading. The 16-segment base disk is constructed in the plane
         perpendicular to the heading using an orthonormal basis built from
         an arbitrary reference vector (world-$z$, switching to world-$x$
-        when the heading is nearly vertical).
+        when the heading is nearly vertical). The heading the cone uses is
+        \code{hider\_view\_heading} for hiders and \code{seeker\_heading}
+        for the seeker; in the hider case this is the \emph{same} function
+        the controller passes to \code{can\_see}, so the on-screen cone and
+        the cone that actually triggers a sighting are guaranteed to
+        coincide (see Sec.~\ref{sec:cover}, ``One heading function for
+        both vision and rendering'').
   \item \textbf{Position trails.} Each hider keeps a bounded deque
         (\code{TRAIL\_LEN = 80}) of recent positions, drawn as a thin green
         line. When the hider returns to idle (after a catch landing) the
@@ -897,42 +1205,58 @@ $r_\mathrm{safe}$ & 0.6 m & Desired clearance from obstacles
 $k_\mathrm{obs}$ & 2 (1/s) & Linear consensus gain. \\
 $k_\mathrm{bar}$ & 0.5 m/s & Barrier gain near contact. \\
 $\varepsilon$ & $0.02\,r_\mathrm{safe}$ & Numerical clamp inside the barrier. \\
-$\theta_\mathrm{fov}$ hiders & $60^\circ$ & Forward cone for seeker detection
-and visualization. \\
+$\theta_\mathrm{fov}$ hiders & $45^\circ$ & Forward cone for seeker detection
+and visualization. Reduced from $60^\circ$ to suppress false alerts. \\
 sensing radius & 2.0 m & Obstacle sensing range (hider and seeker). \\
 seeker detection range & 3.0 m & Hider-side range to detect the seeker. \\
 $k_\mathrm{disp}$ & 0.4 & Inter-agent dispersion gain
 (\code{cf2\_milestone1.K\_DISP}); scale of the Coulomb-form swarm push. \\
 $\varepsilon_\mathrm{disp}$ & 0.05 m & Pairwise-distance floor inside the
 dispersion law (numerical safety). \\
-$k_g$ & 0.15 & Goal attraction gain in the hider controller (weakened so
-dispersion dominates). \\
-$d_\mathrm{min}$ & 1.0 m & 3D drone-to-drone hard floor; mathematically
-guaranteed invariant under the closed-loop dynamics
-(\code{tp\_algos.DRONE\_MIN\_DISTANCE}). \\
+$k_g^\mathrm{roam}$ & 0.45 & Hider goal attraction in roam mode, used
+together with the analytic Lissajous feed-forward
+$\dot{\vect{p}}_\mathrm{lis}$. \\
+$k_g^\mathrm{hide}$ & 0.9 & Hider goal attraction in hide mode (cover target
+is static, no feed-forward). \\
+$d_\mathrm{min}$ & 1.0 m & 3D drone-to-drone hard floor; invariant under the
+closed-loop dynamics (\code{tp\_algos.DRONE\_MIN\_DISTANCE}). \\
 $d_\mathrm{act}$ & 1.5 m & Activation buffer above $d_\mathrm{min}$ where the
 barrier turns on; sized so $d_\mathrm{act} - d_\mathrm{min} \gg
 2 v_\mathrm{max} \Delta t = 0.06$ m
 (\code{tp\_algos.DRONE\_ACTIVATION\_DISTANCE}). \\
 $g_\mathrm{rep}$ & 30.0 & 3D drone-to-drone barrier gain
 (\code{tp\_algos.DRONE\_REPULSION\_GAIN}). \\
-boundary margin & 0.6 m & Distance at which wall push turns on. \\
-$g_\mathrm{bnd}$ & 0.09 & Wall push gain. \\
-$v_\mathrm{max}^\mathrm{xy}$ hider & 0.45 m/s & Final xy saturation, $< $ MAX\_V\_CF2. \\
-$Z$ rate limit & 0.3 m & Per-call $|z_\mathrm{dist} - z|$ cap. \\
+hider boundary margin & 0.6 m & Distance at which the hider's wall push turns on. \\
+$g_\mathrm{bnd}$ hider & 0.09 & Hider wall push gain. \\
+seeker boundary margin & 0.6 m & Distance at which the seeker's wall push turns on. \\
+$g_\mathrm{bnd}^S$ seeker & 0.3 & Seeker wall push gain ($3.3\times$ the
+hider's; the seeker has no dispersion to pull it inward). \\
+$v_\mathrm{max}^\mathrm{xy}$ hider & 0.55 m/s & Hider final xy saturation. \\
+$v_\mathrm{max}^\mathrm{xy}$ seeker & 0.6 m/s & Seeker final xy saturation
+($= \text{MAX\_V\_RMTT}$; the seeker uses its whole speed budget). \\
+$v_\mathrm{max}^z$ seeker & 0.6 m/s & Seeker $z$ saturation (same as xy --
+no separate cap in the current build). \\
+$k_g^S$ & 0.8 & Seeker goal attraction gain. \\
+seeker vision range & 2.0 m & Seeker FoV slant length. \\
+$Z$ rate limit hider & 0.01 m/call & Per-call $|z_\mathrm{dist} - z|$ cap,
+protects the xy saturation against the simulator's unified 3D actuator clamp. \\
 $d_\mathrm{cov}$ & 0.8 m & Cover offset past the obstacle surface. \\
 TTL & 5 s & Lifetime of a seeker sighting in shared memory. \\
 $\theta_\mathrm{seek}$ & $30^\circ$ & Seeker FoV half-angle. \\
-seeker vision range & 3.5 m & Seeker FoV slant length. \\
 $\Omega_X^S, \Omega_Y^S, \Omega_Z^S$ & 0.18, 0.13, 0.08 rad/s & Seeker Lissajous. \\
-$A_X^S, A_Y^S, A_Z^S$ & 1.8, 3.5, 0.4 m & Seeker Lissajous. \\
+$A_X^S, A_Y^S, A_Z^S$ & 1.8, 3.5, 0.0 m & Seeker Lissajous; $A_Z^S = 0$ is
+the disabled-Z policy. \\
 $\omega_x^{(i)}$ & $0.16 + 0.018(i-1)$ rad/s & Hider Lissajous (per-drone, $x$). \\
 $\omega_y^{(i)}$ & $0.11 + 0.015(i-1)$ rad/s & Hider Lissajous (per-drone, $y$). \\
-$\omega_z^{(i)}$ & $0.09 + 0.013(i-1)$ rad/s & Hider Lissajous (per-drone, $z$;
-used in \code{intent\_heading} only). \\
 $A_x, A_y$ & 1.6, 3.0 m & Hider Lissajous amplitudes in $xy$. \\
-$A_z$ & 0.5 m & Used only in \code{intent\_heading} (FoV axis $z$);
-disabled in the position target. \\
+$A_z$ & 0.5 m & Scaffolding only -- commented out in both the position
+target and the FoV axis. \\
+$\tau_i$ & coarse-searched & Per-drone Lissajous phase offset, picked so
+$\vect{p}_\mathrm{lis}^{(i)}(\tau_i)$ is nearest to spawn (kills the spawn
+lurch). \\
+\code{\_COVER\_CACHE\_MAX\_AGE} & 1.0 s & Cover-assignment cache TTL. \\
+\code{\_COVER\_CACHE\_SEEKER\_DELTA} & 0.5 m & Cover-assignment seeker-motion
+gate (re-solve if the seeker has moved more than this since the cache was built). \\
 TRAIL\_LEN & 80 frames & Trail length in the visualization. \\
 \bottomrule
 \end{longtable}
@@ -1006,6 +1330,30 @@ every other hider's report''. A more elaborate scheme (per-pair channels,
 ack/nak, etc.) would not change the closed-loop behaviour because the
 controllers only care about ``most recent fix on the seeker''.
 
+\paragraph{Why the seeker can outrun the hiders raw, yet still loses.}
+The xy speed caps are $v_\mathrm{max}^\mathrm{hider} = 0.55$\,m/s and
+$v_\mathrm{max}^\mathrm{seeker} = 0.6$\,m/s -- the seeker is marginally
+faster. The hiders still win because of two range asymmetries: their
+detection range is $3.0$\,m (against the seeker's $2.0$\,m vision range),
+and their reaction is collective (a single sighting commits the whole
+swarm to hide mode via shared memory). Before the seeker is close enough
+to catch any one hider, every hider has already seen it and is
+$\sim 0.55$\,m/s$\times \tau_\mathrm{react}$ on its way to cover.
+$\tau_\mathrm{react}$ is just the single tick of latency between the
+sighting being written and \code{get\_last\_seen} being read.
+
+\paragraph{Why the cover-assignment cache, not pure instantaneous matching.}
+The min-cost matching is deterministic in the seeker's last-seen position;
+on near-ties between two candidate assignments, a tiny perturbation
+($\sim 5$\,mm of position noise) is enough to flip which hider takes which
+face. Without hysteresis, two hiders would swap roles every few frames,
+each adding a wasted round-trip to its trajectory. The
+$1$\,s / $0.5$\,m cache gate kills the swap chatter without changing the
+steady-state assignment (both candidates were optimal up to the tie, so
+either choice is fine). As a side effect, the brute-force matching runs
+at $\sim 1$\,Hz instead of $20$\,Hz -- a $20\times$ saving that would
+matter on real hardware.
+
 % ============================================================
 \section{Future work}
 % ============================================================
@@ -1022,25 +1370,26 @@ controllers only care about ``most recent fix on the seeker''.
         a Voronoi tessellation) would give a true bounded-consensus
         behaviour and would let the swarm hold formation away from the
         walls.
-  \item \textbf{Per-hider altitude diversity.} The $A_z$ term is already
-        threaded through \code{intent\_heading} but stripped from
-        \code{\_lissajous\_target}, so the FoV cone wobbles in $z$ while the
-        position is altitude-locked. Re-enabling the $A_z$ component in the
-        position target would spread the hiders vertically, making the
-        seeker's narrow cone less effective; the $Z$ rate limit
-        ($0.3$\,m/call) is already small enough that this would not destabilize
-        the actuator saturation. The dispersion law could also be promoted
-        to 3D for the same effect, by extending the gradient sum to $z$.
-  \item \textbf{Hysteresis on the cover assignment.} The min-cost matching
-        is recomputed every tick on the latest poses, which makes it react
-        instantly to seeker motion but also occasionally swaps the roles of
-        two hiders when their costs cross. A small hysteresis (refuse to
-        switch unless the alternative is better by $\delta > 0$) would
-        damp the swaps without changing the steady-state assignment.
+  \item \textbf{Re-enable Z.} The scaffolding is in place: $A_z = 0.5$,
+        $\omega_z^{(i)} = 0.09 + 0.013(i-1)$, $\varphi_z^{(i)}$, and the
+        $z$ branch of \code{intent\_heading}/\code{sense\_obstacles}. Each
+        is currently commented out (Sec.~\ref{sec:lissajous}). Re-enabling
+        Z requires (i) giving $v_z$ its own private saturation cap so the
+        $xy$ avoidance budget is not eaten by the 3D actuator clamp under
+        a Z excursion, (ii) re-validating the obstacle-barrier discrete-time
+        argument in 3D, and (iii) extending the Coulomb dispersion to a
+        full 3D gradient sum. The dispersion law promotion is trivial; the
+        actuator and barrier checks are the load-bearing work.
+  \item \textbf{Persistent referee state across runs.} The catch set and
+        the shared sighting persist for the lifetime of the Python process,
+        so a re-takeoff inside the same simulator session inherits a
+        frozen game state. A \code{game\_referee.reset()} call (called
+        either by the simulator on the next state-0 transition or by the
+        user explicitly) would make the sim hot-reloadable for demo use.
   \item \textbf{Connectivity-preserving dispersion.} The current Coulomb
-        law diverges in the limit of zero distance and decays in the limit
-        of infinite distance, which makes the swarm spread to the boundary.
-        A connectivity-preserving alternative (e.g.\ a potential with a
+        law diverges at zero distance and decays at infinity, so the
+        swarm equilibrium pushes against the boundary. A
+        connectivity-preserving alternative (e.g.\ a potential with a
         finite well at a target spacing) would let the swarm stay inside
         a sensing radius for explicit position broadcasts, matching the
         wireless-range constraint of the real Vol\`iere hardware.
@@ -1053,16 +1402,27 @@ controllers only care about ``most recent fix on the seeker''.
 \toprule
 \textbf{File} & \textbf{LoC (approx.)} & \textbf{Purpose} \\
 \midrule
-\code{cf2\_milestone1.py} & $\sim$ 200 & Main hider controller. \\
-\code{cf2\_sensing.py}    & $\sim$ 150 & FoV sensing primitives. \\
-\code{cf2\_consensus.py}  & $\sim$ 60  & Obstacle consensus law. \\
-\code{cf2\_hider.py}      & $\sim$ 130 & Inter-hider comms + cover geometry. \\
-\code{rmtt\_seeker.py}    & $\sim$ 200 & Seeker controller + \code{can\_see}. \\
-\code{game\_referee.py}   & $\sim$ 60  & Catch detection. \\
-\code{sim\_viz.py}        & $\sim$ 170 & Cones, trails, HUD. \\
-\code{tp\_algos.py}       & $\sim$ 360 & Required entry-point shim plus
+\code{cf2\_milestone1.py} & $\sim$ 250 & Main hider controller; also exports
+\code{hider\_view\_heading} and \code{\_t\_offsets}. \\
+\code{cf2\_sensing.py}    & $\sim$ 120 & FoV sensing primitives. \\
+\code{cf2\_consensus.py}  & $\sim$ 70  & Obstacle and Coulomb consensus laws. \\
+\code{cf2\_hider.py}      & $\sim$ 260 & Inter-hider comms + cover geometry +
+cover-assignment cache. \\
+\code{rmtt\_seeker.py}    & $\sim$ 180 & Seeker controller (+ soft boundary repulsion) + \code{can\_see}. \\
+\code{game\_referee.py}   & $\sim$ 50  & Catch detection. \\
+\code{sim\_viz.py}        & $\sim$ 160 & Cones, trails, HUD. \\
+\code{tp\_algos.py}       & $\sim$ 440 & Required entry-point shim plus
 controller-level 3D drone-to-drone repulsion. \\
-\code{standalone\_sim.py} & $\sim$ 420 & The simulator (provided). \\
+\code{standalone\_sim.py} & $\sim$ 420 & The simulator (4 hiders, 3 obstacles
+in the default spawn config). \\
+\code{scripts/render\_scenes.py}    & $\sim$ 240 & Headless screenshot driver:
+drives \code{standalone\_sim.update()} manually, with a per-scene
+\code{reset\_world}, catch and cone toggles, and a deterministic catch via
+a forced \code{seeker\_heading}. \\
+\code{scripts/render\_law\_plots.py}& $\sim$ 230 & Analytical figures
+(barrier curves, dispersion field, Lissajous footprint, FoV schematic). \\
+\code{report/figures/*.png}         & 10 figures & Figures used throughout the
+report; regenerable by re-running the two scripts above. \\
 \bottomrule
 \end{longtable}
 

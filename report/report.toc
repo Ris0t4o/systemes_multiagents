@@ -4,61 +4,69 @@
 \contentsline {paragraph}{Module decomposition.}{3}{section*.3}%
 \contentsline {paragraph}{Data flow.}{4}{section*.4}%
 \contentsline {paragraph}{Default scenario.}{4}{section*.5}%
-\contentsline {section}{\numberline {2}Mathematical model}{4}{section.2}%
-\contentsline {subsection}{\numberline {2.1}State and kinematics}{4}{subsection.2.1}%
-\contentsline {subsection}{\numberline {2.2}Obstacles}{5}{subsection.2.2}%
-\contentsline {section}{\numberline {3}Hider controller (\texttt {cf2\_milestone1.py})}{5}{section.3}%
-\contentsline {subsection}{\numberline {3.1}Force composition}{5}{subsection.3.1}%
-\contentsline {subsection}{\numberline {3.2}Lissajous roaming path}{6}{subsection.3.2}%
-\contentsline {paragraph}{Two intentionally different ``Lissajous targets''.}{6}{section*.10}%
-\contentsline {subsection}{\numberline {3.3}Mode switching: roam vs.\ hide}{6}{subsection.3.3}%
-\contentsline {subsection}{\numberline {3.4}Cover-assignment geometry (multi-agent)}{7}{subsection.3.4}%
-\contentsline {paragraph}{1. Candidate enumeration.}{7}{section*.11}%
-\contentsline {paragraph}{2. Cost matrix.}{7}{section*.12}%
-\contentsline {paragraph}{3. Min-cost injective assignment.}{7}{section*.13}%
-\contentsline {paragraph}{Decentralization.}{7}{section*.14}%
-\contentsline {paragraph}{Fallback.}{7}{section*.15}%
-\contentsline {section}{\numberline {4}Consensus laws (\texttt {cf2\_consensus.py})}{7}{section.4}%
-\contentsline {subsection}{\numberline {4.1}Obstacle consensus}{8}{subsection.4.1}%
-\contentsline {paragraph}{Asymptotic (linear term).}{8}{section*.18}%
-\contentsline {paragraph}{Bounded actuation (barrier term).}{8}{section*.19}%
-\contentsline {paragraph}{Numerical safety.}{8}{section*.20}%
-\contentsline {subsection}{\numberline {4.2}Inter-agent dispersion consensus}{8}{subsection.4.2}%
-\contentsline {paragraph}{Aggregate Lyapunov.}{9}{section*.23}%
-\contentsline {paragraph}{Long-range coupling.}{9}{section*.24}%
-\contentsline {paragraph}{Centroid invariance and bounded equilibria.}{9}{section*.25}%
-\contentsline {paragraph}{Decentralization.}{9}{section*.26}%
-\contentsline {section}{\numberline {5}Sensing (\texttt {cf2\_sensing.py})}{9}{section.5}%
-\contentsline {subsection}{\numberline {5.1}Intent heading}{9}{subsection.5.1}%
-\contentsline {subsection}{\numberline {5.2}FoV-cone obstacle sensing}{9}{subsection.5.2}%
-\contentsline {paragraph}{Why hiders sense omnidirectionally.}{10}{section*.27}%
-\contentsline {section}{\numberline {6}Seeker controller (\texttt {rmtt\_seeker.py})}{10}{section.6}%
-\contentsline {subsection}{\numberline {6.1}Sweep path}{10}{subsection.6.1}%
-\contentsline {subsection}{\numberline {6.2}Control law}{10}{subsection.6.2}%
-\contentsline {subsection}{\numberline {6.3}Search cone and line-of-sight}{10}{subsection.6.3}%
-\contentsline {section}{\numberline {7}Inter-hider communication (\texttt {cf2\_hider.py})}{10}{section.7}%
-\contentsline {paragraph}{TTL choice.}{11}{section*.28}%
-\contentsline {paragraph}{Threading.}{11}{section*.29}%
-\contentsline {section}{\numberline {8}Catch detection (\texttt {game\_referee.py})}{11}{section.8}%
-\contentsline {section}{\numberline {9}Visualization (\texttt {sim\_viz.py})}{11}{section.9}%
-\contentsline {section}{\numberline {10}Simulator hooks and controller-level separation (\texttt {tp\_algos.py})}{11}{section.10}%
-\contentsline {subsection}{\numberline {10.1}3D inter-drone barrier: a hard 1\,m floor}{12}{subsection.10.1}%
-\contentsline {paragraph}{Discrete-time non-penetration argument.}{12}{section*.30}%
-\contentsline {subsection}{\numberline {10.2}How the helper is used}{12}{subsection.10.2}%
-\contentsline {subsection}{\numberline {10.3}Hider takeoff handshake}{13}{subsection.10.3}%
-\contentsline {section}{\numberline {11}Simulation infrastructure (\texttt {standalone\_sim.py})}{13}{section.11}%
-\contentsline {subsection}{\numberline {11.1}World and hardware specs}{13}{subsection.11.1}%
-\contentsline {subsection}{\numberline {11.2}State machine}{13}{subsection.11.2}%
-\contentsline {subsection}{\numberline {11.3}Async controller execution}{13}{subsection.11.3}%
-\contentsline {subsection}{\numberline {11.4}Collision detection}{13}{subsection.11.4}%
-\contentsline {section}{\numberline {12}Tunables summary}{14}{section.12}%
-\contentsline {section}{\numberline {13}Discussion and design choices}{15}{section.13}%
-\contentsline {paragraph}{Why separate the FoV cone from the obstacle sensor.}{15}{section*.31}%
-\contentsline {paragraph}{Why a barrier on top of the linear consensus.}{15}{section*.32}%
-\contentsline {paragraph}{Why cover behind the surface, not the center.}{15}{section*.33}%
-\contentsline {paragraph}{Why a gradient flow (Coulomb potential) for inter-hider dispersion.}{15}{section*.34}%
-\contentsline {paragraph}{Why an explicit cover assignment, not nearest-cover-per-agent.}{15}{section*.35}%
-\contentsline {paragraph}{Why hide the hider positions from the seeker controller specifically.}{16}{section*.36}%
-\contentsline {paragraph}{Why shared-memory comms rather than message passing.}{16}{section*.37}%
-\contentsline {section}{\numberline {14}Future work}{16}{section.14}%
-\contentsline {section}{\numberline {A}File listing}{17}{appendix.A}%
+\contentsline {section}{\numberline {2}Mathematical model}{6}{section.2}%
+\contentsline {subsection}{\numberline {2.1}State and kinematics}{6}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Obstacles}{6}{subsection.2.2}%
+\contentsline {section}{\numberline {3}Hider controller (\texttt {cf2\_milestone1.py})}{6}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Force composition}{6}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Lissajous roaming path}{7}{subsection.3.2}%
+\contentsline {paragraph}{Per-drone phase offset (no spawn lurch).}{8}{section*.10}%
+\contentsline {paragraph}{Z scaffolding present but disabled.}{8}{section*.11}%
+\contentsline {subsection}{\numberline {3.3}Mode switching: roam vs.\ hide}{8}{subsection.3.3}%
+\contentsline {paragraph}{One heading function for both vision and rendering.}{8}{section*.12}%
+\contentsline {subsection}{\numberline {3.4}Cover-assignment geometry (multi-agent)}{9}{subsection.3.4}%
+\contentsline {paragraph}{1. Candidate enumeration.}{9}{section*.13}%
+\contentsline {paragraph}{2. Cost matrix.}{10}{section*.14}%
+\contentsline {paragraph}{3. Min-cost injective assignment.}{10}{section*.15}%
+\contentsline {paragraph}{4. Hysteresis cache.}{10}{section*.16}%
+\contentsline {paragraph}{Decentralization.}{10}{section*.17}%
+\contentsline {paragraph}{Fallback.}{10}{section*.18}%
+\contentsline {section}{\numberline {4}Consensus laws (\texttt {cf2\_consensus.py})}{10}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Obstacle consensus}{13}{subsection.4.1}%
+\contentsline {paragraph}{Asymptotic (linear term).}{13}{section*.21}%
+\contentsline {paragraph}{Bounded actuation (barrier term).}{13}{section*.22}%
+\contentsline {paragraph}{Numerical safety.}{13}{section*.23}%
+\contentsline {subsection}{\numberline {4.2}Inter-agent dispersion consensus}{13}{subsection.4.2}%
+\contentsline {paragraph}{Aggregate Lyapunov.}{14}{section*.26}%
+\contentsline {paragraph}{Long-range coupling.}{14}{section*.27}%
+\contentsline {paragraph}{Centroid invariance and bounded equilibria.}{14}{section*.28}%
+\contentsline {paragraph}{Decentralization.}{14}{section*.29}%
+\contentsline {section}{\numberline {5}Sensing (\texttt {cf2\_sensing.py})}{17}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Intent heading}{17}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}FoV-cone obstacle sensing}{17}{subsection.5.2}%
+\contentsline {paragraph}{Why hiders sense omnidirectionally.}{17}{section*.30}%
+\contentsline {section}{\numberline {6}Seeker controller (\texttt {rmtt\_seeker.py})}{17}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Sweep path}{17}{subsection.6.1}%
+\contentsline {paragraph}{Why the seeker hovers below the hiders.}{18}{section*.31}%
+\contentsline {subsection}{\numberline {6.2}Control law}{18}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Soft boundary repulsion}{18}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}Search cone and line-of-sight}{19}{subsection.6.4}%
+\contentsline {section}{\numberline {7}Inter-hider communication (\texttt {cf2\_hider.py})}{19}{section.7}%
+\contentsline {paragraph}{TTL choice.}{19}{section*.32}%
+\contentsline {paragraph}{Threading.}{19}{section*.33}%
+\contentsline {section}{\numberline {8}Catch detection (\texttt {game\_referee.py})}{21}{section.8}%
+\contentsline {paragraph}{End-of-game: the seeker lands too.}{21}{section*.34}%
+\contentsline {section}{\numberline {9}Visualization (\texttt {sim\_viz.py})}{22}{section.9}%
+\contentsline {section}{\numberline {10}Simulator hooks and controller-level separation (\texttt {tp\_algos.py})}{22}{section.10}%
+\contentsline {subsection}{\numberline {10.1}3D inter-drone barrier: a hard 1\,m floor}{22}{subsection.10.1}%
+\contentsline {paragraph}{Discrete-time non-penetration argument.}{22}{section*.35}%
+\contentsline {subsection}{\numberline {10.2}How the helper is used}{23}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}Hider takeoff handshake}{23}{subsection.10.3}%
+\contentsline {section}{\numberline {11}Simulation infrastructure (\texttt {standalone\_sim.py})}{23}{section.11}%
+\contentsline {subsection}{\numberline {11.1}World and hardware specs}{23}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}State machine}{24}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Async controller execution}{24}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}Collision detection}{24}{subsection.11.4}%
+\contentsline {section}{\numberline {12}Tunables summary}{24}{section.12}%
+\contentsline {section}{\numberline {13}Discussion and design choices}{26}{section.13}%
+\contentsline {paragraph}{Why separate the FoV cone from the obstacle sensor.}{26}{section*.36}%
+\contentsline {paragraph}{Why a barrier on top of the linear consensus.}{26}{section*.37}%
+\contentsline {paragraph}{Why cover behind the surface, not the center.}{26}{section*.38}%
+\contentsline {paragraph}{Why a gradient flow (Coulomb potential) for inter-hider dispersion.}{26}{section*.39}%
+\contentsline {paragraph}{Why an explicit cover assignment, not nearest-cover-per-agent.}{26}{section*.40}%
+\contentsline {paragraph}{Why hide the hider positions from the seeker controller specifically.}{27}{section*.41}%
+\contentsline {paragraph}{Why shared-memory comms rather than message passing.}{27}{section*.42}%
+\contentsline {paragraph}{Why the seeker can outrun the hiders raw, yet still loses.}{27}{section*.43}%
+\contentsline {paragraph}{Why the cover-assignment cache, not pure instantaneous matching.}{27}{section*.44}%
+\contentsline {section}{\numberline {14}Future work}{27}{section.14}%
+\contentsline {section}{\numberline {A}File listing}{28}{appendix.A}%
