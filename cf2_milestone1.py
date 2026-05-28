@@ -50,7 +50,7 @@ K_BARRIER = 0.5
 # Coulomb-style dispersion gain, comparable to goal_gain.
 K_DISP = 0.4
 
-HIDER_SEEKER_DETECTION_RANGE = 8.0
+HIDER_SEEKER_DETECTION_RANGE = 3.0
 
 # Mode-dependent goal gains. Roam stays moderate because velocity feedforward
 # absorbs most tracking demand; hide is aggressive so the drone saturates at
@@ -138,6 +138,14 @@ def _saturate_xy(vx, vy, vmax):
         scale = vmax / speed
         return vx * scale, vy * scale
     return vx, vy
+
+
+def hider_view_heading(robot_no, robot_pose, t):
+    """Heading the hider's forward FoV is actually using. Sim_viz must call this
+    (not intent_heading directly) so the rendered cone matches the cone that
+    triggers a catch sighting — both need the same per-drone Lissajous phase."""
+    _ensure_t_offset(robot_no, robot_pose, t)
+    return intent_heading(robot_no, robot_pose, t + _t_offsets[robot_no])
 
 
 def compute_roaming_cmd(robot_no, robot_pose, cf2_poses, rmtt_poses, obstacle_pose, obstacle_size, clock):

@@ -9,14 +9,18 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 try:
     from .rmtt_seeker import seeker_heading, SEEKER_FOV_HALF_ANGLE, SEEKER_VISION_RANGE
-    from .cf2_milestone1 import FOV_HALF_ANGLE, SENSING_RADIUS, HIDER_SEEKER_DETECTION_RANGE
-    from .cf2_sensing import intent_heading
+    from .cf2_milestone1 import (
+        FOV_HALF_ANGLE, SENSING_RADIUS, HIDER_SEEKER_DETECTION_RANGE,
+        hider_view_heading,
+    )
     from .cf2_hider import get_last_seen
     from . import game_referee
 except ImportError:
     from rmtt_seeker import seeker_heading, SEEKER_FOV_HALF_ANGLE, SEEKER_VISION_RANGE
-    from cf2_milestone1 import FOV_HALF_ANGLE, SENSING_RADIUS, HIDER_SEEKER_DETECTION_RANGE
-    from cf2_sensing import intent_heading
+    from cf2_milestone1 import (
+        FOV_HALF_ANGLE, SENSING_RADIUS, HIDER_SEEKER_DETECTION_RANGE,
+        hider_view_heading,
+    )
     from cf2_hider import get_last_seen
     import game_referee
 
@@ -116,7 +120,7 @@ def update(rmtt_poses, rmtt_states, cf2_poses, cf2_states, t):
             _state['cf2_fov_cones'][i].remove()
             _state['cf2_fov_cones'][i] = None
         if cf2_states[i] == 2 and not game_referee.is_caught(i + 1):
-            heading = intent_heading(i + 1, cf2_poses[:, i], t)
+            heading = hider_view_heading(i + 1, cf2_poses[:, i], t)
             _state['cf2_fov_cones'][i] = draw_fov_cone(
                 ax,
                 (cf2_poses[0, i], cf2_poses[1, i], cf2_poses[2, i]),
